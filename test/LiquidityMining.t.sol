@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "forge-std/Test.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
+import {HookHelpers} from "v4-periphery/libraries/HookHelpers.sol";
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
@@ -12,14 +13,15 @@ import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {Deployers} from "v4-core/test/utils/Deployers.sol";
-import {Counter} from "../src/Counter.sol";
+import {LiquidityMiningHook, hookPermissions} from "../src/LiquidityMiningHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 
-contract CounterTest is Test, Deployers {
+contract LiquidityMiningTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
+    using HookHelpers for Hooks.Permissions;
 
-    Counter counter;
+    LiquidityMiningHook hook;
     PoolId poolId;
 
     function setUp() public {
@@ -28,17 +30,14 @@ contract CounterTest is Test, Deployers {
         Deployers.deployMintAndApprove2Currencies();
 
         // Deploy the hook to an address with the correct flags
-        uint160 flags = uint160(
-            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
-                | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
-        );
+        uint160 flags = hookPermissions().flags();
         (address hookAddress, bytes32 salt) =
-            HookMiner.find(address(this), flags, type(Counter).creationCode, abi.encode(address(manager)));
-        counter = new Counter{salt: salt}(IPoolManager(address(manager)));
-        require(address(counter) == hookAddress, "CounterTest: hook address mismatch");
+            HookMiner.find(address(this), flags, type(LiquidityMiningHook).creationCode, abi.encode(address(manager)));
+        hook = new LiquidityMiningHook{salt: salt}(IPoolManager(address(manager)));
+        require(address(hook) == hookAddress, "CounterTest: hook address mismatch");
 
         // Create the pool
-        key = PoolKey(currency0, currency1, 3000, 60, IHooks(address(counter)));
+        key = PoolKey(currency0, currency1, 3000, 60, IHooks(address(hook)));
         poolId = key.toId();
         manager.initialize(key, SQRT_PRICE_1_1, ZERO_BYTES);
 
@@ -54,13 +53,35 @@ contract CounterTest is Test, Deployers {
         );
     }
 
+    struct Temp {
+        uint256 hey;
+    }
+
+    struct Temp2 {
+        bytes32 hey;
+    }
+
+    function cast(Temp memory a) internal returns (Temp2 memory b) {
+        assembly {
+            a := b
+        }
+    }
+
+    function logFmp() public {
+        uint256 fmp;
+        assembly {
+            fmp := mload(0x40)
+        }
+        console.log(fmp);
+    }
+
     function testCounterHooks() public {
         // positions were created in setup()
-        assertEq(counter.beforeAddLiquidityCount(poolId), 3);
-        assertEq(counter.beforeRemoveLiquidityCount(poolId), 0);
+        // assertEq(hook.beforeAddLiquidityCount(poolId), 3);
+        // assertEq(hook.beforeRemoveLiquidityCount(poolId), 0);
 
-        assertEq(counter.beforeSwapCount(poolId), 0);
-        assertEq(counter.afterSwapCount(poolId), 0);
+        // assertEq(hook.beforeSwapCount(poolId), 0);
+        // assertEq(hook.afterSwapCount(poolId), 0);
 
         // Perform a test swap //
         bool zeroForOne = true;
@@ -70,14 +91,14 @@ contract CounterTest is Test, Deployers {
 
         assertEq(int256(swapDelta.amount0()), amountSpecified);
 
-        assertEq(counter.beforeSwapCount(poolId), 1);
-        assertEq(counter.afterSwapCount(poolId), 1);
+        // assertEq(hook.beforeSwapCount(poolId), 1);
+        // assertEq(hook.afterSwapCount(poolId), 1);
     }
 
     function testLiquidityHooks() public {
         // positions were created in setup()
-        assertEq(counter.beforeAddLiquidityCount(poolId), 3);
-        assertEq(counter.beforeRemoveLiquidityCount(poolId), 0);
+        // assertEq(hook.beforeAddLiquidityCount(poolId), 3);
+        // assertEq(hook.beforeRemoveLiquidityCount(poolId), 0);
 
         // remove liquidity
         int256 liquidityDelta = -1e18;
@@ -85,7 +106,7 @@ contract CounterTest is Test, Deployers {
             key, IPoolManager.ModifyLiquidityParams(-60, 60, liquidityDelta, 0), ZERO_BYTES
         );
 
-        assertEq(counter.beforeAddLiquidityCount(poolId), 3);
-        assertEq(counter.beforeRemoveLiquidityCount(poolId), 1);
+        // assertEq(hook.beforeAddLiquidityCount(poolId), 3);
+        // assertEq(hook.beforeRemoveLiquidityCount(poolId), 1);
     }
 }
