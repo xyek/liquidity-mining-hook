@@ -15,7 +15,6 @@ import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
 
-// import {TickExtended} from "./libraries/TickExtended.sol";
 import {Simulate} from "./libraries/SimulateSwap.sol";
 
 import {console} from "forge-std/console.sol";

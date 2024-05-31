@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
-
 import {FixedPoint128} from "v4-core/src/libraries/FixedPoint128.sol";
 import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 import {LiquidityMath} from "v4-core/src/libraries/LiquidityMath.sol";
@@ -15,11 +13,11 @@ import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {CustomRevert} from "v4-core/src/libraries/CustomRevert.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {BalanceDelta, BalanceDeltaLibrary, toBalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {PoolId} from "v4-core/src/types/PoolId.sol";
 import {Slot0} from "v4-core/src/types/Slot0.sol";
 
-import {PoolStateRead} from "./PoolStateRead.sol";
 import {TickBitmapModified} from "./TickBitmapModified.sol";
 
 library Simulate {
@@ -37,8 +35,6 @@ library Simulate {
         Pool.SwapParams memory params,
         function(PoolId, Pool.StepComputations memory,Pool.SwapState memory) swapStepHandler
     ) internal {
-        // BalanceDelta result;
-        uint256 feeForProtocol;
         uint24 swapFee;
         Pool.SwapState memory state;
         StateLibrary.PoolStateView memory globalState = poolManager.getPoolState(poolId);
@@ -104,7 +100,7 @@ library Simulate {
             step.sqrtPriceStartX96 = state.sqrtPriceX96;
 
             (step.tickNext, step.initialized) = TickBitmapModified.nextInitializedTickWithinOneWord(
-                PoolStateRead.tickBitmapGetter(poolManager, poolId), state.tick, params.tickSpacing, zeroForOne
+                poolManager, poolId, state.tick, params.tickSpacing, zeroForOne
             );
 
             // ensure that we do not overshoot the min/max tick, as the tick bitmap is not aware of these bounds
@@ -148,7 +144,6 @@ library Simulate {
                     uint256 delta = (step.amountIn + step.feeAmount) * protocolFee / ProtocolFeeLibrary.PIPS_DENOMINATOR;
                     // subtract it from the total fee and add it to the protocol fee
                     step.feeAmount -= delta;
-                    feeForProtocol += delta;
                 }
             }
 
