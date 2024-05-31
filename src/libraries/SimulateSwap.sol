@@ -34,7 +34,7 @@ library Simulate {
         PoolId poolId,
         Pool.SwapParams memory params,
         function(PoolId, Pool.StepComputations memory,Pool.SwapState memory) swapStepHandler
-    ) internal {
+    ) internal returns (BalanceDelta result) {
         uint24 swapFee;
         Pool.SwapState memory state;
         StateLibrary.PoolStateView memory globalState = poolManager.getPoolState(poolId);
@@ -71,7 +71,7 @@ library Simulate {
                 Pool.InvalidFeeForExactOut.selector.revertWith();
             }
 
-            if (params.amountSpecified == 0) return ();
+            if (params.amountSpecified == 0) return BalanceDeltaLibrary.ZERO_DELTA;
 
             if (zeroForOne) {
                 if (params.sqrtPriceLimitX96 >= slot0Start.sqrtPriceX96()) {
@@ -178,18 +178,18 @@ library Simulate {
             }
         }
 
-        // unchecked {
-        //     if (zeroForOne != exactInput) {
-        //         result = toBalanceDelta(
-        //             state.amountCalculated.toInt128(),
-        //             (params.amountSpecified - state.amountSpecifiedRemaining).toInt128()
-        //         );
-        //     } else {
-        //         result = toBalanceDelta(
-        //             (params.amountSpecified - state.amountSpecifiedRemaining).toInt128(),
-        //             state.amountCalculated.toInt128()
-        //         );
-        //     }
-        // }
+        unchecked {
+            if (zeroForOne != exactInput) {
+                result = toBalanceDelta(
+                    state.amountCalculated.toInt128(),
+                    (params.amountSpecified - state.amountSpecifiedRemaining).toInt128()
+                );
+            } else {
+                result = toBalanceDelta(
+                    (params.amountSpecified - state.amountSpecifiedRemaining).toInt128(),
+                    state.amountCalculated.toInt128()
+                );
+            }
+        }
     }
 }

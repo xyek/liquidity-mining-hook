@@ -28,7 +28,7 @@ function hookPermissions() pure returns (Hooks.Permissions memory) {
         beforeRemoveLiquidity: false,
         afterRemoveLiquidity: false,
         beforeSwap: true,
-        afterSwap: false,
+        afterSwap: true,
         beforeDonate: false,
         afterDonate: false,
         beforeSwapReturnDelta: false,
@@ -71,7 +71,7 @@ contract LiquidityMiningHook is BaseHook {
         _updateGlobalState(id);
 
         // simulate the swap and update the tick states
-        Simulate.swap(
+        BalanceDelta simulatedSwapDelta = Simulate.swap(
             poolManager,
             id,
             Pool.SwapParams({
@@ -83,7 +83,29 @@ contract LiquidityMiningHook is BaseHook {
             }),
             _swapStepHandler
         );
+        assembly {
+            // store the simulated swap delta to check against it in afterSwap
+            tstore(id, simulatedSwapDelta)
+        }
+        // we returning the simulated swap delta to check it in after swap
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+    }
+
+    function afterSwap(
+        address,
+        PoolKey calldata key,
+        IPoolManager.SwapParams calldata,
+        BalanceDelta swapDelta,
+        bytes calldata
+    ) external view override returns (bytes4, int128) {
+        PoolId id = key.toId();
+        BalanceDelta simulatedSwapDelta;
+        assembly {
+            // store the simulated swap delta to check against it in afterSwap
+            simulatedSwapDelta := tload(id)
+        }
+        assert(swapDelta == simulatedSwapDelta);
+        return (BaseHook.afterSwap.selector, 0);
     }
 
     function beforeAddLiquidity(
