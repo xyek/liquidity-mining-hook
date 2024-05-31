@@ -15,11 +15,13 @@ import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {Deployers} from "v4-core/test/utils/Deployers.sol";
 import {LiquidityMiningHook, hookPermissions} from "../src/LiquidityMiningHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
+import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 
 contract LiquidityMiningTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
     using HookHelpers for Hooks.Permissions;
+    using StateLibrary for IPoolManager;
 
     LiquidityMiningHook hook;
     PoolId poolId;
@@ -40,73 +42,101 @@ contract LiquidityMiningTest is Test, Deployers {
         key = PoolKey(currency0, currency1, 3000, 60, IHooks(address(hook)));
         poolId = key.toId();
         manager.initialize(key, SQRT_PRICE_1_1, ZERO_BYTES);
+    }
 
-        // Provide liquidity to the pool
-        modifyLiquidityRouter.modifyLiquidity(key, IPoolManager.ModifyLiquidityParams(-60, 60, 10 ether, 0), ZERO_BYTES);
-        modifyLiquidityRouter.modifyLiquidity(
-            key, IPoolManager.ModifyLiquidityParams(-120, 120, 10 ether, 0), ZERO_BYTES
-        );
+    function testSecondsInside() public {
+        //  Liquidity Distribution
+        //
+        //                                     price
+        //  -3000  ----- -1500  --- -1200 -----  0  -----  1200  -----  3000
+        //                             ======================
+        //                                                   ==============
+        //    ===============
+        //                     < gap >
+        //
+        addLiqudity({tickLower: -1200, tickUpper: 1200});
+        addLiqudity({tickLower: 1200, tickUpper: 3000});
+        addLiqudity({tickLower: -3000, tickUpper: -1500});
+
+        assertEq(hook.getSecondsInside(poolId, -1200, 1200), 0, "check11");
+        assertEq(hook.getSecondsInside(poolId, 1200, 3000), 0, "check12");
+        assertEq(hook.getSecondsInside(poolId, -3000, -1500), 0, "check13");
+        assertEq(hook.getSecondsInside(poolId, -1500, -1200), 0, "check14");
+        assertEq(hook.getSecondsInside(poolId, -1500, 3000), 0, "check15");
+        assertEq(hook.getSecondsInside(poolId, -3000, 3000), 0, "check16");
+
+        advanceTime(100 seconds);
+
+        assertEq(hook.getSecondsInside(poolId, -1200, 1200), 100 seconds, "check21");
+        assertEq(hook.getSecondsInside(poolId, 1200, 3000), 0, "check22");
+        assertEq(hook.getSecondsInside(poolId, -3000, -1500), 0, "check23");
+        assertEq(hook.getSecondsInside(poolId, -1500, -1200), 0, "check24");
+        assertEq(hook.getSecondsInside(poolId, -1500, 3000), 100 seconds, "check25");
+        assertEq(hook.getSecondsInside(poolId, -3000, 3000), 100 seconds, "check26");
+
+        swap(key, false, 1 ether, ZERO_BYTES);
+        assertEq(currentTick(), 1906); // <===== current tick is updated by swap
+
+        assertEq(hook.getSecondsInside(poolId, -1200, 1200), 100 seconds, "check31");
+        assertEq(hook.getSecondsInside(poolId, 1200, 3000), 0, "check32");
+        assertEq(hook.getSecondsInside(poolId, -3000, -1500), 0, "check33");
+        assertEq(hook.getSecondsInside(poolId, -1500, -1200), 0, "check34");
+        assertEq(hook.getSecondsInside(poolId, -1500, 3000), 100 seconds, "check35");
+        assertEq(hook.getSecondsInside(poolId, -3000, 3000), 100 seconds, "check36");
+
+        advanceTime(150 seconds);
+
+        assertEq(hook.getSecondsInside(poolId, -1200, 1200), 100 seconds, "check41");
+        assertEq(hook.getSecondsInside(poolId, 1200, 3000), 150 seconds, "check42");
+        assertEq(hook.getSecondsInside(poolId, -3000, -1500), 0, "check43");
+        assertEq(hook.getSecondsInside(poolId, -1500, -1200), 0, "check44");
+        assertEq(hook.getSecondsInside(poolId, -1500, 3000), 250 seconds, "check45");
+        assertEq(hook.getSecondsInside(poolId, -3000, 3000), 250 seconds, "check46");
+
+        swap(key, true, 1.8 ether, ZERO_BYTES);
+        assertEq(currentTick(), -1617); // <===== current tick is updated by swap
+
+        assertEq(hook.getSecondsInside(poolId, -1200, 1200), 100 seconds, "check51");
+        assertEq(hook.getSecondsInside(poolId, 1200, 3000), 150 seconds, "check52");
+        assertEq(hook.getSecondsInside(poolId, -3000, -1500), 0, "check53");
+        assertEq(hook.getSecondsInside(poolId, -1500, -1200), 0, "check54");
+        assertEq(hook.getSecondsInside(poolId, -1500, 3000), 250 seconds, "check55");
+        assertEq(hook.getSecondsInside(poolId, -3000, 3000), 250 seconds, "check56");
+
+        advanceTime(25 seconds);
+
+        assertEq(hook.getSecondsInside(poolId, -1200, 1200), 100 seconds, "check61");
+        assertEq(hook.getSecondsInside(poolId, 1200, 3000), 150 seconds, "check62");
+        assertEq(hook.getSecondsInside(poolId, -3000, -1500), 25 seconds, "check63");
+        assertEq(hook.getSecondsInside(poolId, -1500, -1200), 0, "check64");
+        assertEq(hook.getSecondsInside(poolId, -1500, 3000), 250 seconds, "check65");
+        assertEq(hook.getSecondsInside(poolId, -3000, 3000), 275 seconds, "check66");
+    }
+
+    function currentTick() internal view returns (int24 tickCurrent) {
+        PoolId id = key.toId();
+        (, tickCurrent,,) = manager.getSlot0(id);
+    }
+
+    function logTick() internal view {
+        console.logInt(int256(currentTick()));
+    }
+
+    function advanceTime(uint256 seconds_) internal {
+        vm.warp(block.timestamp + seconds_);
+    }
+
+    function addLiqudity(int24 tickLower, int24 tickUpper) internal {
+        // add liquidity
         modifyLiquidityRouter.modifyLiquidity(
             key,
-            IPoolManager.ModifyLiquidityParams(TickMath.minUsableTick(60), TickMath.maxUsableTick(60), 10 ether, 0),
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: tickLower,
+                tickUpper: tickUpper,
+                liquidityDelta: 11e18,
+                salt: 0
+            }),
             ZERO_BYTES
         );
-    }
-
-    struct Temp {
-        uint256 hey;
-    }
-
-    struct Temp2 {
-        bytes32 hey;
-    }
-
-    function cast(Temp memory a) internal returns (Temp2 memory b) {
-        assembly {
-            a := b
-        }
-    }
-
-    function logFmp() public {
-        uint256 fmp;
-        assembly {
-            fmp := mload(0x40)
-        }
-        console.log(fmp);
-    }
-
-    function testCounterHooks() public {
-        // positions were created in setup()
-        // assertEq(hook.beforeAddLiquidityCount(poolId), 3);
-        // assertEq(hook.beforeRemoveLiquidityCount(poolId), 0);
-
-        // assertEq(hook.beforeSwapCount(poolId), 0);
-        // assertEq(hook.afterSwapCount(poolId), 0);
-
-        // Perform a test swap //
-        bool zeroForOne = true;
-        int256 amountSpecified = -1e18; // negative number indicates exact input swap!
-        BalanceDelta swapDelta = swap(key, zeroForOne, amountSpecified, ZERO_BYTES);
-        // ------------------- //
-
-        assertEq(int256(swapDelta.amount0()), amountSpecified);
-
-        // assertEq(hook.beforeSwapCount(poolId), 1);
-        // assertEq(hook.afterSwapCount(poolId), 1);
-    }
-
-    function testLiquidityHooks() public {
-        // positions were created in setup()
-        // assertEq(hook.beforeAddLiquidityCount(poolId), 3);
-        // assertEq(hook.beforeRemoveLiquidityCount(poolId), 0);
-
-        // remove liquidity
-        int256 liquidityDelta = -1e18;
-        modifyLiquidityRouter.modifyLiquidity(
-            key, IPoolManager.ModifyLiquidityParams(-60, 60, liquidityDelta, 0), ZERO_BYTES
-        );
-
-        // assertEq(hook.beforeAddLiquidityCount(poolId), 3);
-        // assertEq(hook.beforeRemoveLiquidityCount(poolId), 1);
     }
 }

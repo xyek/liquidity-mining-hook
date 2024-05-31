@@ -24,7 +24,7 @@ function hookPermissions() pure returns (Hooks.Permissions memory) {
     return Hooks.Permissions({
         beforeInitialize: false,
         afterInitialize: false,
-        beforeAddLiquidity: false,
+        beforeAddLiquidity: true,
         afterAddLiquidity: false,
         beforeRemoveLiquidity: false,
         afterRemoveLiquidity: false,
@@ -98,6 +98,7 @@ contract LiquidityMiningHook is BaseHook {
 
         (, int24 tick,,) = poolManager.getSlot0(id);
         _updateTick(id, params.tickLower, tick, pool.secondsPerLiquidityGlobalX128);
+        _updateTick(id, params.tickUpper, tick, pool.secondsPerLiquidityGlobalX128);
 
         return BaseHook.beforeAddLiquidity.selector;
     }
@@ -132,6 +133,24 @@ contract LiquidityMiningHook is BaseHook {
             if (tickIdx <= tickCurrent) {
                 tick.secondsPerLiquidityOutsideX128 = secondsPerLiquidityCumulativeX128;
                 tick.secondsOutside = uint48(block.timestamp);
+            }
+        }
+    }
+
+    function getSecondsInside(PoolId id, int24 tickLower, int24 tickUpper) public view returns (uint48 secondsInside) {
+        require(tickLower <= tickUpper);
+        uint48 lowerSecondsOutside = pools[id].ticks[tickLower].secondsOutside;
+        uint48 upperSecondsOutside = pools[id].ticks[tickUpper].secondsOutside;
+
+        (, int24 tickCurrent,,) = poolManager.getSlot0(id);
+
+        unchecked {
+            if (tickCurrent < tickLower) {
+                secondsInside = lowerSecondsOutside - upperSecondsOutside;
+            } else if (tickCurrent >= tickUpper) {
+                secondsInside = upperSecondsOutside - lowerSecondsOutside;
+            } else {
+                secondsInside = uint48(block.timestamp - lowerSecondsOutside - upperSecondsOutside);
             }
         }
     }
