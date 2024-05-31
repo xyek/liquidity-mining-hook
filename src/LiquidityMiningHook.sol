@@ -48,6 +48,7 @@ contract LiquidityMiningHook is BaseHook {
     }
 
     // TODO add position extension state
+    // TODO add tokens fund state
     struct PoolExtendedState {
         uint48 lastBlockTimestamp;
         uint160 secondsPerLiquidityGlobalX128;
@@ -131,6 +132,7 @@ contract LiquidityMiningHook is BaseHook {
             uint160 secondsPerLiquidityX128 =
                 uint160(FullMath.mulDiv(block.timestamp - pool.lastBlockTimestamp, FixedPoint128.Q128, liquidity));
             pool.secondsPerLiquidityGlobalX128 += secondsPerLiquidityX128;
+            console.log("incrementd", secondsPerLiquidityX128);
         }
         pool.lastBlockTimestamp = uint48(block.timestamp);
     }
@@ -159,9 +161,9 @@ contract LiquidityMiningHook is BaseHook {
     }
 
     function getSecondsInside(PoolId id, int24 tickLower, int24 tickUpper) public view returns (uint48 secondsInside) {
-        require(tickLower <= tickUpper);
-        uint48 lowerSecondsOutside = pools[id].ticks[tickLower].secondsOutside;
-        uint48 upperSecondsOutside = pools[id].ticks[tickUpper].secondsOutside;
+        PoolExtendedState storage pool = pools[id];
+        uint48 lowerSecondsOutside = pool.ticks[tickLower].secondsOutside;
+        uint48 upperSecondsOutside = pool.ticks[tickUpper].secondsOutside;
 
         (, int24 tickCurrent,,) = poolManager.getSlot0(id);
 
@@ -172,6 +174,43 @@ contract LiquidityMiningHook is BaseHook {
                 secondsInside = upperSecondsOutside - lowerSecondsOutside;
             } else {
                 secondsInside = uint48(block.timestamp - lowerSecondsOutside - upperSecondsOutside);
+            }
+        }
+    }
+
+    function getSecondsPerLiquidityInsideX128(PoolId id, int24 tickLower, int24 tickUpper)
+        public
+        view
+        returns (uint160 secondsPerLiquidityInsideX128)
+    {
+        PoolExtendedState storage pool = pools[id];
+        uint160 lowerSecondsPerLiquidityOutsideX128 = pool.ticks[tickLower].secondsPerLiquidityOutsideX128;
+        uint160 upperSecondsPerLiquidityOutsideX128 = pool.ticks[tickUpper].secondsPerLiquidityOutsideX128;
+
+        (, int24 tickCurrent,,) = poolManager.getSlot0(id);
+
+        unchecked {
+            if (tickCurrent < tickLower) {
+                secondsPerLiquidityInsideX128 =
+                    lowerSecondsPerLiquidityOutsideX128 - upperSecondsPerLiquidityOutsideX128;
+            } else if (tickCurrent >= tickUpper) {
+                secondsPerLiquidityInsideX128 =
+                    upperSecondsPerLiquidityOutsideX128 - lowerSecondsPerLiquidityOutsideX128;
+            } else {
+                uint256 lastBlockTimestamp = pool.lastBlockTimestamp;
+                uint160 secondsPerLiquidityGlobalX128 = pool.secondsPerLiquidityGlobalX128;
+
+                // adjusting the global seconds per liquidity to the current block
+                if (block.timestamp > lastBlockTimestamp) {
+                    uint256 liquidity = poolManager.getLiquidity(id);
+                    uint160 secondsPerLiquidityX128 = uint160(
+                        FullMath.mulDiv(block.timestamp - pool.lastBlockTimestamp, FixedPoint128.Q128, liquidity)
+                    );
+                    secondsPerLiquidityGlobalX128 += secondsPerLiquidityX128;
+                }
+
+                secondsPerLiquidityInsideX128 = secondsPerLiquidityGlobalX128 - lowerSecondsPerLiquidityOutsideX128
+                    - upperSecondsPerLiquidityOutsideX128;
             }
         }
     }
