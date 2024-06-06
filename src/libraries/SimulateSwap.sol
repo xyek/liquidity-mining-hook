@@ -37,14 +37,13 @@ library Simulate {
     ) internal returns (BalanceDelta result) {
         uint24 swapFee;
         Pool.SwapState memory state;
-        StateLibrary.PoolStateView memory globalState = poolManager.getPoolState(poolId);
         bool zeroForOne = params.zeroForOne;
         bool exactInput = params.amountSpecified < 0;
         uint256 protocolFee;
         {
-            Slot0 slot0Start = globalState.slot0;
+            (Slot0 slot0Start, uint256 feeGrowthGlobal0X128, uint256 feeGrowthGlobal1X128, uint128 liquidityStart) =
+                poolManager.getPoolState(poolId);
 
-            uint128 liquidityStart = globalState.liquidity;
             protocolFee =
                 zeroForOne ? slot0Start.protocolFee().getZeroForOneFee() : slot0Start.protocolFee().getOneForZeroFee();
 
@@ -52,10 +51,7 @@ library Simulate {
             state.amountCalculated = 0;
             state.sqrtPriceX96 = slot0Start.sqrtPriceX96();
             state.tick = slot0Start.tick();
-            {
-                state.feeGrowthGlobalX128 =
-                    zeroForOne ? globalState.feeGrowthGlobal0X128 : globalState.feeGrowthGlobal1X128;
-            }
+            state.feeGrowthGlobalX128 = zeroForOne ? feeGrowthGlobal0X128 : feeGrowthGlobal1X128;
             state.liquidity = liquidityStart;
 
             // if the beforeSwap hook returned a valid fee override, use that as the LP fee, otherwise load from storage
