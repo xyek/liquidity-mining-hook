@@ -55,9 +55,9 @@ contract LiquidityMiningTest is Test, Deployers {
         //    ===============
         //                     < gap >
         //
-        addLiqudity({tickLower: -1200, tickUpper: 1200});
-        addLiqudity({tickLower: 1200, tickUpper: 3000});
-        addLiqudity({tickLower: -3000, tickUpper: -1500});
+        addLiquidity({tickLower: -1200, tickUpper: 1200});
+        addLiquidity({tickLower: 1200, tickUpper: 3000});
+        addLiquidity({tickLower: -3000, tickUpper: -1500});
 
         assertEq(hook.getSecondsInside(poolId, -1200, 1200), 0, "check11");
         assertEq(hook.getSecondsInside(poolId, 1200, 3000), 0, "check12");
@@ -124,9 +124,9 @@ contract LiquidityMiningTest is Test, Deployers {
         //    ===============
         //                     < gap >
         //
-        addLiqudity({tickLower: -1200, tickUpper: 1200});
-        addLiqudity({tickLower: 1200, tickUpper: 3000});
-        addLiqudity({tickLower: -3000, tickUpper: -1500});
+        addLiquidity({tickLower: -1200, tickUpper: 1200});
+        addLiquidity({tickLower: 1200, tickUpper: 3000});
+        addLiquidity({tickLower: -3000, tickUpper: -1500});
 
         assertEq(hook.getSecondsPerLiquidityInsideX128(poolId, -1200, 1200), 0, "check11");
         assertEq(hook.getSecondsPerLiquidityInsideX128(poolId, 1200, 3000), 0, "check12");
@@ -190,7 +190,7 @@ contract LiquidityMiningTest is Test, Deployers {
     }
 
     function testSingleLpLiquidityPoints() external {
-        PositionRef memory p1 = addLiqudity(-1200, 1200);
+        PositionRef memory p1 = addLiquidity(-1200, 1200);
 
         assertEq(getLiquidityPoints(p1), 0, "check1");
         advanceTime(100 seconds);
@@ -198,8 +198,8 @@ contract LiquidityMiningTest is Test, Deployers {
     }
 
     function testTwoLpLiquidityPoints_1() external {
-        PositionRef memory p1 = addLiqudity(1e18, -1200, 1200, keccak256("1"));
-        PositionRef memory p2 = addLiqudity(3e18, -1200, 1200, keccak256("2"));
+        PositionRef memory p1 = addLiquidity(1e18, -1200, 1200, keccak256("1"));
+        PositionRef memory p2 = addLiquidity(3e18, -1200, 1200, keccak256("2"));
 
         assertEq(getLiquidityPoints(p1), 0, "check11");
         assertEq(getLiquidityPoints(p2), 0, "check12");
@@ -208,6 +208,60 @@ contract LiquidityMiningTest is Test, Deployers {
 
         assertEq(getLiquidityPoints(p1), (25 seconds << 32) - 1, "check21");
         assertEq(getLiquidityPoints(p2), (75 seconds << 32) - 1, "check22");
+    }
+
+    function testThreeLpLiquidityPoints_2() external {
+        //  Liquidity Distribution
+        //                                  price
+        //  -2400  ------ -1200 --- -600 ---  0  ------  1200
+        //
+        //                   ==============================
+        //     ========================
+        //     ========================
+        //
+        PositionRef memory p1 = addLiquidity(1e18, -1200, 1200, keccak256("1"));
+        PositionRef memory p2 = addLiquidity(2e18, -2400, -600, keccak256("2"));
+        PositionRef memory p3 = addLiquidity(1e18, -2400, -600, keccak256("3"));
+
+        assertEq(getLiquidityPoints(p1), 0, "check11");
+        assertEq(getLiquidityPoints(p2), 0, "check12");
+        assertEq(getLiquidityPoints(p3), 0, "check13");
+
+        advanceTime(100 seconds);
+
+        // only p1 should get points, p2 p3 should not get any points because price wasnt there
+        assertEq(getLiquidityPoints(p1), (100 seconds << 32) - 1, "check21");
+        assertEq(getLiquidityPoints(p2), 0, "check22");
+        assertEq(getLiquidityPoints(p3), 0, "check23");
+
+        swap(key, true, 0.05 ether, ZERO_BYTES);
+        assertEq(currentTick(), -706); // <===== current tick is updated by swap
+
+        assertEq(getLiquidityPoints(p1), (100 seconds << 32) - 1, "check31");
+        assertEq(getLiquidityPoints(p2), 0, "check32");
+        assertEq(getLiquidityPoints(p3), 0, "check33");
+
+        advanceTime(100 seconds);
+
+        // once tick moves between -1200 and -600, both positions should get points
+        // since p2 has higher L value, it should get more points
+        assertEq(getLiquidityPoints(p1), (100 seconds << 32) - 1 + (25 seconds << 32) - 1, "check41");
+        assertEq(getLiquidityPoints(p2), (50 seconds << 32) - 1, "check42");
+        assertEq(getLiquidityPoints(p3), (25 seconds << 32) - 1, "check43");
+
+        swap(key, true, 0.1 ether, ZERO_BYTES);
+        assertEq(currentTick(), -1241); // <===== current tick is updated by swap
+
+        assertEq(getLiquidityPoints(p1), (100 seconds << 32) - 1 + (25 seconds << 32) - 1, "check51");
+        assertEq(getLiquidityPoints(p2), (50 seconds << 32) - 1, "check52");
+        assertEq(getLiquidityPoints(p3), (25 seconds << 32) - 1, "check53");
+
+        advanceTime(303 seconds);
+
+        // p2 p3 gets the points proportionally
+        assertEq(getLiquidityPoints(p1), (100 seconds << 32) - 1 + (25 seconds << 32) - 1, "check61");
+        assertEq(getLiquidityPoints(p2), (50 seconds << 32) - 1 + (202 seconds << 32) - 1, "check62");
+        assertEq(getLiquidityPoints(p3), (25 seconds << 32) - 1 + (101 seconds << 32) - 1, "check63");
     }
 
     function currentTick() internal view returns (int24 tickCurrent) {
@@ -230,11 +284,11 @@ contract LiquidityMiningTest is Test, Deployers {
         bytes32 salt;
     }
 
-    function addLiqudity(int24 tickLower, int24 tickUpper) internal returns (PositionRef memory) {
-        return addLiqudity(1e18, tickLower, tickUpper, bytes32(0));
+    function addLiquidity(int24 tickLower, int24 tickUpper) internal returns (PositionRef memory) {
+        return addLiquidity(1e18, tickLower, tickUpper, bytes32(0));
     }
 
-    function addLiqudity(int256 liquidityDelta, int24 tickLower, int24 tickUpper, bytes32 salt)
+    function addLiquidity(int256 liquidityDelta, int24 tickLower, int24 tickUpper, bytes32 salt)
         internal
         returns (PositionRef memory)
     {
