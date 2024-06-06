@@ -189,6 +189,27 @@ contract LiquidityMiningTest is Test, Deployers {
         );
     }
 
+    function testSingleLpLiquidityPoints() external {
+        PositionRef memory p1 = addLiqudity(-1200, 1200);
+
+        assertEq(getLiquidityPoints(p1), 0, "check1");
+        advanceTime(100 seconds);
+        assertEq(getLiquidityPoints(p1), (100 seconds << 32) - 1, "check2");
+    }
+
+    function testTwoLpLiquidityPoints_1() external {
+        PositionRef memory p1 = addLiqudity(1e18, -1200, 1200, keccak256("1"));
+        PositionRef memory p2 = addLiqudity(3e18, -1200, 1200, keccak256("2"));
+
+        assertEq(getLiquidityPoints(p1), 0, "check11");
+        assertEq(getLiquidityPoints(p2), 0, "check12");
+
+        advanceTime(100 seconds);
+
+        assertEq(getLiquidityPoints(p1), (25 seconds << 32) - 1, "check21");
+        assertEq(getLiquidityPoints(p2), (75 seconds << 32) - 1, "check22");
+    }
+
     function currentTick() internal view returns (int24 tickCurrent) {
         PoolId id = key.toId();
         (, tickCurrent,,) = manager.getSlot0(id);
@@ -202,18 +223,39 @@ contract LiquidityMiningTest is Test, Deployers {
         vm.warp(block.timestamp + seconds_);
     }
 
-    function addLiqudity(int24 tickLower, int24 tickUpper) internal {
+    struct PositionRef {
+        address owner;
+        int24 tickLower;
+        int24 tickUpper;
+        bytes32 salt;
+    }
+
+    function addLiqudity(int24 tickLower, int24 tickUpper) internal returns (PositionRef memory) {
+        return addLiqudity(1e18, tickLower, tickUpper, bytes32(0));
+    }
+
+    function addLiqudity(int256 liquidityDelta, int24 tickLower, int24 tickUpper, bytes32 salt)
+        internal
+        returns (PositionRef memory)
+    {
         // add liquidity
         modifyLiquidityRouter.modifyLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams({
                 tickLower: tickLower,
                 tickUpper: tickUpper,
-                liquidityDelta: 1e18,
-                salt: 0
+                liquidityDelta: liquidityDelta,
+                salt: salt
             }),
             ZERO_BYTES
         );
+
+        return PositionRef(address(modifyLiquidityRouter), tickLower, tickUpper, salt);
+    }
+
+    function getLiquidityPoints(PositionRef memory p) internal returns (uint256 liquidityPoints) {
+        return
+            hook.getPositionExtended(key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt).relativeSecondsCumulativeX32;
     }
 
     function perLiquidity(uint256 secs) internal pure returns (uint160) {

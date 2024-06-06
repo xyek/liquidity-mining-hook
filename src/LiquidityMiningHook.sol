@@ -43,16 +43,25 @@ contract LiquidityMiningHook is BaseHook {
     using StateLibrary for IPoolManager;
 
     struct TickExtendedInfo {
+        // the timestamp when the tick was last outside the tick range
         uint48 secondsOutside;
-        uint160 secondsPerLiquidityOutsideX128;
+        // the cumulative seconds per liquidity outside the tick range
+        uint176 secondsPerLiquidityOutsideX128;
     }
 
-    // TODO add position extension state
+    struct PositionExtendedInfo {
+        // liquidity points awarded for this position, updated on each position modification
+        uint80 relativeSecondsCumulativeX32;
+        // snapshot of getSecondsPerLiquidityInsideX128 for which liquidity points are already awarded
+        uint176 secondsPerLiquidityInsideLastX128;
+    }
+
     // TODO add tokens fund state
     struct PoolExtendedState {
         uint48 lastBlockTimestamp;
-        uint160 secondsPerLiquidityGlobalX128;
+        uint176 secondsPerLiquidityGlobalX128;
         mapping(int24 tick => TickExtendedInfo) ticks;
+        mapping(bytes32 => PositionExtendedInfo) positions;
     }
 
     mapping(PoolId => PoolExtendedState) public pools;
@@ -110,19 +119,72 @@ contract LiquidityMiningHook is BaseHook {
     }
 
     function beforeAddLiquidity(
-        address,
+        address owner,
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams calldata params,
         bytes calldata
     ) external override returns (bytes4) {
-        PoolId id = key.toId();
-        PoolExtendedState storage pool = _updateGlobalState(id);
-
-        (, int24 tick,,) = poolManager.getSlot0(id);
-        _updateTick(id, params.tickLower, tick, pool.secondsPerLiquidityGlobalX128);
-        _updateTick(id, params.tickUpper, tick, pool.secondsPerLiquidityGlobalX128);
-
+        updatePosition(key.toId(), owner, params.tickLower, params.tickUpper, params.salt);
         return BaseHook.beforeAddLiquidity.selector;
+    }
+
+    function beforeRemoveLiquidity(
+        address owner,
+        PoolKey calldata key,
+        IPoolManager.ModifyLiquidityParams calldata params,
+        bytes calldata
+    ) external override returns (bytes4) {
+        updatePosition(key.toId(), owner, params.tickLower, params.tickUpper, params.salt);
+        return BaseHook.beforeRemoveLiquidity.selector;
+    }
+
+    function updatePosition(PoolId id, address owner, int24 tickLower, int24 tickUpper, bytes32 salt) public {
+        (, int24 tick,,) = poolManager.getSlot0(id);
+
+        // PoolState updates
+        PoolExtendedState storage pool = _updateGlobalState(id);
+        _updateTick(id, tickLower, tick, pool.secondsPerLiquidityGlobalX128);
+        _updateTick(id, tickUpper, tick, pool.secondsPerLiquidityGlobalX128);
+
+        // UserPositionState updates
+        uint128 liquidityLast = poolManager.getPositionLiquidity(id, owner, tickLower, tickUpper, salt);
+        PositionExtendedInfo storage position = _getPositionPtr(id, owner, tickLower, tickUpper, salt);
+        uint176 secondsPerLiquidityInsideX128 = getSecondsPerLiquidityInsideX128(id, tickLower, tickUpper);
+        position.relativeSecondsCumulativeX32 +=
+            computeSecondsX32(liquidityLast, secondsPerLiquidityInsideX128, position.secondsPerLiquidityInsideLastX128);
+        position.secondsPerLiquidityInsideLastX128 = secondsPerLiquidityInsideX128;
+    }
+
+    /// @notice Computes the liquidity points for a user
+    ///     Liquidity points are fractional seconds inside based on user vs global liquidity.
+    /// @param userLiquidity The liquidity of the user
+    /// @param secondsPerLiquidityInsideUpdatedX128 The seconds per liquidity inside the tick range after the update
+    /// @param secondsPerLiquidityInsideLastX128 The seconds per liquidity inside the tick range during last position modification
+    /// @return secondsX32 The liquidity points to award to the user
+    function computeSecondsX32(
+        uint128 userLiquidity,
+        uint176 secondsPerLiquidityInsideUpdatedX128,
+        uint176 secondsPerLiquidityInsideLastX128
+    ) internal pure returns (uint80 secondsX32) {
+        // TLDR: Fractional seconds inside quantity is scaled up by a factor of 2^32 to preserve precision.
+        //
+        // Bit Analysis
+        // Global liquidity bits -> 128(partial)
+        // User liquidity bits -> 128(partial, but it's <= global liquidity)
+        // Seconds bits -> 48
+        // Seconds per global liquidity X128 bits -> 48 - 128(partial) + 128(full) : max 176 and min 48 bits
+        // Liquidity points -> Seconds per global liq times user liq bits:
+        //     48 - 128(partial global) + 128(partial user) -> max 48 bits and min 0 bits (if user's liq is too small).
+        //     Hence, to preserve precision in the seconds, we want to scale to 80 bits.
+        //     factor -> 80(target) - 48(current) = 32
+
+        secondsX32 = uint80(
+            FullMath.mulDiv(
+                userLiquidity,
+                secondsPerLiquidityInsideUpdatedX128 - secondsPerLiquidityInsideLastX128,
+                1 << 96 // 128 - 32
+            )
+        );
     }
 
     function _updateGlobalState(PoolId id) internal returns (PoolExtendedState storage pool) {
@@ -132,7 +194,6 @@ contract LiquidityMiningHook is BaseHook {
             uint160 secondsPerLiquidityX128 =
                 uint160(FullMath.mulDiv(block.timestamp - pool.lastBlockTimestamp, FixedPoint128.Q128, liquidity));
             pool.secondsPerLiquidityGlobalX128 += secondsPerLiquidityX128;
-            console.log("incrementd", secondsPerLiquidityX128);
         }
         pool.lastBlockTimestamp = uint48(block.timestamp);
     }
@@ -147,7 +208,7 @@ contract LiquidityMiningHook is BaseHook {
         }
     }
 
-    function _updateTick(PoolId id, int24 tickIdx, int24 tickCurrent, uint160 secondsPerLiquidityCumulativeX128)
+    function _updateTick(PoolId id, int24 tickIdx, int24 tickCurrent, uint176 secondsPerLiquidityCumulativeX128)
         internal
     {
         (uint128 liquidityGrossBefore,) = poolManager.getTickLiquidity(id, tickIdx);
@@ -181,11 +242,11 @@ contract LiquidityMiningHook is BaseHook {
     function getSecondsPerLiquidityInsideX128(PoolId id, int24 tickLower, int24 tickUpper)
         public
         view
-        returns (uint160 secondsPerLiquidityInsideX128)
+        returns (uint176 secondsPerLiquidityInsideX128)
     {
         PoolExtendedState storage pool = pools[id];
-        uint160 lowerSecondsPerLiquidityOutsideX128 = pool.ticks[tickLower].secondsPerLiquidityOutsideX128;
-        uint160 upperSecondsPerLiquidityOutsideX128 = pool.ticks[tickUpper].secondsPerLiquidityOutsideX128;
+        uint176 lowerSecondsPerLiquidityOutsideX128 = pool.ticks[tickLower].secondsPerLiquidityOutsideX128;
+        uint176 upperSecondsPerLiquidityOutsideX128 = pool.ticks[tickUpper].secondsPerLiquidityOutsideX128;
 
         (, int24 tickCurrent,,) = poolManager.getSlot0(id);
 
@@ -198,7 +259,7 @@ contract LiquidityMiningHook is BaseHook {
                     upperSecondsPerLiquidityOutsideX128 - lowerSecondsPerLiquidityOutsideX128;
             } else {
                 uint256 lastBlockTimestamp = pool.lastBlockTimestamp;
-                uint160 secondsPerLiquidityGlobalX128 = pool.secondsPerLiquidityGlobalX128;
+                uint176 secondsPerLiquidityGlobalX128 = pool.secondsPerLiquidityGlobalX128;
 
                 // adjusting the global seconds per liquidity to the current block
                 if (block.timestamp > lastBlockTimestamp) {
@@ -213,5 +274,34 @@ contract LiquidityMiningHook is BaseHook {
                     - upperSecondsPerLiquidityOutsideX128;
             }
         }
+    }
+
+    function getPositionExtended(PoolId id, address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
+        public
+        returns (PositionExtendedInfo memory)
+    {
+        updatePosition(id, owner, tickLower, tickUpper, salt);
+        return _getPositionPtr(id, owner, tickLower, tickUpper, salt);
+    }
+
+    function _getPositionPtr(PoolId id, address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
+        internal
+        view
+        returns (PositionExtendedInfo storage position)
+    {
+        // positionKey = keccak256(abi.encodePacked(owner, tickLower, tickUpper, salt))
+        bytes32 positionKey;
+
+        /// @solidity memory-safe-assembly
+        assembly {
+            mstore(0x26, salt) // [0x26, 0x46)
+            mstore(0x06, tickUpper) // [0x23, 0x26)
+            mstore(0x03, tickLower) // [0x20, 0x23)
+            mstore(0, owner) // [0x0c, 0x20)
+            positionKey := keccak256(0x0c, 0x3a) // len is 58 bytes
+            mstore(0x26, 0) // rewrite 0x26 to 0
+        }
+
+        position = pools[id].positions[positionKey];
     }
 }
