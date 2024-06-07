@@ -15,7 +15,10 @@ import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
 
+import {SafeTransferLib, ERC20} from "solmate/utils/SafeTransferLib.sol";
+
 import {Simulate} from "./libraries/SimulateSwap.sol";
+import {Reward} from "./libraries/Reward.sol";
 
 import {console} from "forge-std/console.sol";
 
@@ -41,6 +44,7 @@ function hookPermissions() pure returns (Hooks.Permissions memory) {
 contract LiquidityMiningHook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
+    using SafeTransferLib for ERC20;
 
     struct TickExtendedInfo {
         // the timestamp when the tick was last outside the tick range
@@ -54,6 +58,13 @@ contract LiquidityMiningHook is BaseHook {
         uint80 relativeSecondsCumulativeX32;
         // snapshot of getSecondsPerLiquidityInsideX128 for which liquidity points are already awarded
         uint176 secondsPerLiquidityInsideLastX128;
+        mapping(ERC20 rewardToken => mapping(uint256 rate => uint256)) claimed;
+    }
+
+    struct RewardInfo {
+        uint48 start;
+        uint48 expiry;
+        address provider;
     }
 
     // TODO add tokens fund state
@@ -61,12 +72,18 @@ contract LiquidityMiningHook is BaseHook {
         uint48 lastBlockTimestamp;
         uint176 secondsPerLiquidityGlobalX128;
         mapping(int24 tick => TickExtendedInfo) ticks;
-        mapping(bytes32 => PositionExtendedInfo) positions;
+        mapping(bytes32 positionKey => PositionExtendedInfo) positions;
+        mapping(bytes32 rewardKey => RewardInfo) rewards;
     }
 
     mapping(PoolId => PoolExtendedState) public pools;
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
+
+    modifier ethCallOnly() {
+        require(msg.sender == address(0), "LiquidityMiningHook: view-only method");
+        _;
+    }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return hookPermissions();
@@ -75,6 +92,7 @@ contract LiquidityMiningHook is BaseHook {
     function beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata swapParams, bytes calldata)
         external
         override
+        poolManagerOnly
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         PoolId id = key.toId();
@@ -107,7 +125,7 @@ contract LiquidityMiningHook is BaseHook {
         IPoolManager.SwapParams calldata,
         BalanceDelta swapDelta,
         bytes calldata
-    ) external view override returns (bytes4, int128) {
+    ) external view override poolManagerOnly returns (bytes4, int128) {
         PoolId id = key.toId();
         BalanceDelta simulatedSwapDelta;
         assembly {
@@ -122,9 +140,9 @@ contract LiquidityMiningHook is BaseHook {
         address owner,
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams calldata params,
-        bytes calldata
-    ) external override returns (bytes4) {
-        updatePosition(key.toId(), owner, params.tickLower, params.tickUpper, params.salt);
+        bytes calldata hookData
+    ) external override poolManagerOnly returns (bytes4) {
+        _updatePositionState(key.toId(), owner, params.tickLower, params.tickUpper, params.salt, hookData);
         return BaseHook.beforeAddLiquidity.selector;
     }
 
@@ -132,27 +150,114 @@ contract LiquidityMiningHook is BaseHook {
         address owner,
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams calldata params,
-        bytes calldata
-    ) external override returns (bytes4) {
-        updatePosition(key.toId(), owner, params.tickLower, params.tickUpper, params.salt);
+        bytes calldata hookData
+    ) external override poolManagerOnly returns (bytes4) {
+        _updatePositionState(key.toId(), owner, params.tickLower, params.tickUpper, params.salt, hookData);
         return BaseHook.beforeRemoveLiquidity.selector;
     }
 
-    function updatePosition(PoolId id, address owner, int24 tickLower, int24 tickUpper, bytes32 salt) public {
-        (, int24 tick,,) = poolManager.getSlot0(id);
+    function streamReward(PoolId id, int24 tickLower, int24 tickUpper, ERC20 rewardToken, uint256 rate, uint48 duration)
+        external
+    {
+        require(rate > 0, "LiquidityMiningHook: rate must be non-zero");
+        bytes32 rewardKey = Reward.key(tickLower, tickUpper, address(rewardToken), rate);
+        RewardInfo memory info = pools[id].rewards[rewardKey];
+        if (info.provider != address(0)) {
+            require(info.provider == msg.sender, "LiquidityMiningHook: reward already provided");
+        } else {
+            info.provider = msg.sender;
+        }
+        if (info.start == 0) {
+            // fresh start
+            info.start = uint48(block.timestamp);
+            info.expiry = uint48(block.timestamp + duration);
+        } else if (info.expiry < block.timestamp) {
+            // old reward expired
+            info.start = uint48(block.timestamp);
+            info.expiry = uint48(block.timestamp + duration);
+        } else {
+            // reward extend
+            info.expiry = uint48(info.expiry + duration);
+        }
+        pools[id].rewards[rewardKey] = info;
 
-        // PoolState updates
+        rewardToken.safeTransferFrom(msg.sender, address(this), rate * duration);
+    }
+
+    function terminateReward(PoolId id, int24 tickLower, int24 tickUpper, ERC20 rewardToken, uint256 rate) external {
+        bytes32 rewardKey = Reward.key(tickLower, tickUpper, address(rewardToken), rate);
+        RewardInfo memory info = pools[id].rewards[rewardKey];
+        require(info.provider == msg.sender, "LiquidityMiningHook: only provider can terminate reward");
+
+        uint256 expiry = pools[id].rewards[rewardKey].expiry;
+
+        require(expiry > block.timestamp, "LiquidityMiningHook: reward already expired");
+
+        pools[id].rewards[rewardKey].expiry = uint48(block.timestamp);
+
+        uint256 unspentDuration = expiry - block.timestamp;
+        rewardToken.safeTransfer(msg.sender, rate * unspentDuration);
+    }
+
+    function _calculateReward(
+        PositionExtendedInfo storage position,
+        uint48 start,
+        uint48 expiry,
+        uint256 rate,
+        uint256 totalSecondsInside
+    ) internal view returns (uint256 reward) {
+        if (totalSecondsInside == 0) {
+            return 0;
+        }
+        uint256 duration;
+        if (expiry < block.timestamp) {
+            duration = expiry - start;
+        } else {
+            duration = block.timestamp - start;
+        }
+        uint256 totalTokens = duration * rate;
+        return FullMath.mulDiv(position.relativeSecondsCumulativeX32, totalTokens, totalSecondsInside << 32);
+    }
+
+    function _updatePositionState(
+        PoolId id,
+        address owner,
+        int24 tickLower,
+        int24 tickUpper,
+        bytes32 salt,
+        bytes memory hookData
+    ) internal returns (PositionExtendedInfo storage position, uint256 unclaimed) {
         PoolExtendedState storage pool = _updateGlobalState(id);
-        _updateTick(id, tickLower, tick, pool.secondsPerLiquidityGlobalX128);
-        _updateTick(id, tickUpper, tick, pool.secondsPerLiquidityGlobalX128);
 
-        // UserPositionState updates
-        uint128 liquidityLast = poolManager.getPositionLiquidity(id, owner, tickLower, tickUpper, salt);
-        PositionExtendedInfo storage position = _getPositionPtr(id, owner, tickLower, tickUpper, salt);
-        uint176 secondsPerLiquidityInsideX128 = getSecondsPerLiquidityInsideX128(id, tickLower, tickUpper);
-        position.relativeSecondsCumulativeX32 +=
-            computeSecondsX32(liquidityLast, secondsPerLiquidityInsideX128, position.secondsPerLiquidityInsideLastX128);
-        position.secondsPerLiquidityInsideLastX128 = secondsPerLiquidityInsideX128;
+        {
+            // PoolState updates
+            (, int24 tick,,) = poolManager.getSlot0(id);
+            _updateTick(id, tickLower, tick, pool.secondsPerLiquidityGlobalX128);
+            _updateTick(id, tickUpper, tick, pool.secondsPerLiquidityGlobalX128);
+
+            // UserPositionState updates
+            uint128 liquidityLast = poolManager.getPositionLiquidity(id, owner, tickLower, tickUpper, salt);
+            position = _getPositionPtr(id, owner, tickLower, tickUpper, salt);
+            uint176 secondsPerLiquidityInsideX128 = getSecondsPerLiquidityInsideX128(id, tickLower, tickUpper);
+            position.relativeSecondsCumulativeX32 += computeSecondsX32(
+                liquidityLast, secondsPerLiquidityInsideX128, position.secondsPerLiquidityInsideLastX128
+            );
+            position.secondsPerLiquidityInsideLastX128 = secondsPerLiquidityInsideX128;
+        }
+
+        // claim rewards if any
+        if (hookData.length != 0) {
+            (ERC20 rewardToken, uint256 rate, address beneficiary) = abi.decode(hookData, (ERC20, uint256, address));
+            uint256 secondsInside = getSecondsInside(id, tickLower, tickUpper);
+            RewardInfo storage rewardInfo = pool.rewards[Reward.key(tickLower, tickUpper, address(rewardToken), rate)];
+            uint256 totalPositionReward =
+                _calculateReward(position, rewardInfo.start, rewardInfo.expiry, rate, secondsInside);
+            unclaimed = totalPositionReward - position.claimed[rewardToken][rate];
+            if (unclaimed > 0 && beneficiary != address(0)) {
+                position.claimed[rewardToken][rate] = totalPositionReward;
+                rewardToken.safeTransfer(beneficiary, unclaimed);
+            }
+        }
     }
 
     /// @notice Computes the liquidity points for a user
@@ -276,12 +381,26 @@ contract LiquidityMiningHook is BaseHook {
         }
     }
 
-    function getPositionExtended(PoolId id, address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
-        public
-        returns (PositionExtendedInfo memory)
+    // TODO rename getUpdatedPosition
+    function getUpdatedPosition(
+        PoolId id,
+        address owner,
+        int24 tickLower,
+        int24 tickUpper,
+        bytes32 salt,
+        bytes memory hookData
+    )
+        external
+        ethCallOnly
+        returns (
+            uint80 relativeSecondsCumulativeX32,
+            uint176 secondsPerLiquidityInsideLastX128,
+            uint256 unclaimedRewards
+        )
     {
-        updatePosition(id, owner, tickLower, tickUpper, salt);
-        return _getPositionPtr(id, owner, tickLower, tickUpper, salt);
+        PositionExtendedInfo storage position;
+        (position, unclaimedRewards) = _updatePositionState(id, owner, tickLower, tickUpper, salt, hookData);
+        return (position.relativeSecondsCumulativeX32, position.secondsPerLiquidityInsideLastX128, unclaimedRewards);
     }
 
     function _getPositionPtr(PoolId id, address owner, int24 tickLower, int24 tickUpper, bytes32 salt)

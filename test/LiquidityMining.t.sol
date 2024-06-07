@@ -17,6 +17,7 @@ import {LiquidityMiningHook, hookPermissions} from "../src/LiquidityMiningHook.s
 import {HookMiner} from "./utils/HookMiner.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {FixedPoint128} from "v4-core/src/libraries/FixedPoint128.sol";
+import {ERC20} from "solmate/utils/SafeTransferLib.sol";
 
 contract LiquidityMiningTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
@@ -24,8 +25,11 @@ contract LiquidityMiningTest is Test, Deployers {
     using HookHelpers for Hooks.Permissions;
     using StateLibrary for IPoolManager;
 
+    uint256 constant Q32 = 1 << 32;
+
     LiquidityMiningHook hook;
     PoolId poolId;
+    RewardToken rewardToken;
 
     function setUp() public {
         // creates the pool manager, utility routers, and test tokens
@@ -43,6 +47,8 @@ contract LiquidityMiningTest is Test, Deployers {
         key = PoolKey(currency0, currency1, 3000, 60, IHooks(address(hook)));
         poolId = key.toId();
         manager.initialize(key, SQRT_PRICE_1_1, ZERO_BYTES);
+
+        rewardToken = new RewardToken();
     }
 
     function testSecondsInside() public {
@@ -210,7 +216,32 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEq(getLiquidityPoints(p2), (75 seconds << 32) - 1, "check22");
     }
 
-    function testThreeLpLiquidityPoints_2() external {
+    function testTwoLpLiquidityPoints_2() external {
+        PositionRef memory p1 = addLiquidity(1e18, -1200, 1200, keccak256("1"));
+        PositionRef memory p2 = addLiquidity(3e18, -1200, 1200, keccak256("2"));
+
+        assertEq(getLiquidityPoints(p1), 0, "check11");
+        assertEq(getLiquidityPoints(p2), 0, "check12");
+
+        advanceTime(100 seconds);
+
+        assertEq(getLiquidityPoints(p1), (25 seconds << 32) - 1, "check21");
+        assertEq(getLiquidityPoints(p2), (75 seconds << 32) - 1, "check22");
+
+        PositionRef memory p3 = addLiquidity(4e18, -1200, 1200, keccak256("3"));
+
+        assertEq(getLiquidityPoints(p1), (25 seconds << 32) - 1, "check31");
+        assertEq(getLiquidityPoints(p2), (75 seconds << 32) - 1, "check32");
+        assertEq(getLiquidityPoints(p3), 0, "check33");
+
+        advanceTime(200 seconds);
+
+        assertEq(getLiquidityPoints(p1), (25 seconds << 32) - 1 + (25 seconds << 32) - 1, "check41");
+        assertEq(getLiquidityPoints(p2), (75 seconds << 32) - 1 + (75 seconds << 32) - 1, "check42");
+        assertEq(getLiquidityPoints(p3), (100 seconds << 32) - 1, "check43");
+    }
+
+    function testThreeLpLiquidityPoints_3() external {
         //  Liquidity Distribution
         //                                  price
         //  -2400  ------ -1200 --- -600 ---  0  ------  1200
@@ -264,6 +295,33 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEq(getLiquidityPoints(p3), (25 seconds << 32) - 1 + (101 seconds << 32) - 1, "check63");
     }
 
+    function testTwoLpRewards_1() external {
+        PositionRef memory p1 = addLiquidity(1e18, -1200, 1200, keccak256("1"));
+        PositionRef memory p2 = addLiquidity(3e18, -1200, 1200, keccak256("2"));
+
+        streamReward(-1200, 1200, rate = 1 ether, 100 seconds);
+
+        assertEq(getRewards(p1), 0, "check11");
+        assertEq(getRewards(p2), 0, "check12");
+
+        advanceTime(20 seconds);
+
+        assertEqWithError({actual: getRewards(p1), expected: 5 ether, maxError: Q32, m: "check21"});
+        assertEqWithError({actual: getRewards(p2), expected: 15 ether, maxError: Q32, m: "check22"});
+
+        PositionRef memory p3 = addLiquidity(4e18, -1200, 1200, keccak256("3"));
+
+        assertEqWithError({actual: getRewards(p1), expected: 5 ether, maxError: Q32, m: "check31"});
+        assertEqWithError({actual: getRewards(p2), expected: 15 ether, maxError: Q32, m: "check32"});
+        assertEq(getRewards(p3), 0, "check33");
+
+        advanceTime(20 seconds);
+
+        assertEqWithError({actual: getRewards(p1), expected: 5 ether + 2.5 ether, maxError: Q32, m: "check41"});
+        assertEqWithError({actual: getRewards(p2), expected: 15 ether + 7.5 ether, maxError: Q32, m: "check42"});
+        assertEqWithError({actual: getRewards(p3), expected: 10 ether, maxError: Q32, m: "check43"});
+    }
+
     function currentTick() internal view returns (int24 tickCurrent) {
         PoolId id = key.toId();
         (, tickCurrent,,) = manager.getSlot0(id);
@@ -308,11 +366,39 @@ contract LiquidityMiningTest is Test, Deployers {
     }
 
     function getLiquidityPoints(PositionRef memory p) internal returns (uint256 liquidityPoints) {
-        return
-            hook.getPositionExtended(key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt).relativeSecondsCumulativeX32;
+        vm.prank(address(0));
+        (liquidityPoints,,) = hook.getUpdatedPosition(key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, "");
+    }
+
+    function streamReward(int24 tickLower, int24 tickUpper, uint256 streamRate, uint48 duration) internal {
+        rewardToken.mint(streamRate * duration);
+        rewardToken.approve(address(hook), streamRate * duration);
+        hook.streamReward(key.toId(), tickLower, tickUpper, rewardToken, streamRate, duration);
+    }
+
+    uint256 rate;
+
+    function getRewards(PositionRef memory p) internal returns (uint256 rewards) {
+        vm.prank(address(0));
+        (,, rewards) = hook.getUpdatedPosition(
+            key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, abi.encode(rewardToken, rate, address(0))
+        );
     }
 
     function perLiquidity(uint256 secs) internal pure returns (uint160) {
         return uint160(FixedPoint128.Q128 * secs / 1e18);
+    }
+
+    function assertEqWithError(uint256 actual, uint256 expected, uint256 maxError, string memory m) internal {
+        uint256 diff = actual < expected ? expected - actual : actual - expected;
+        if (diff > maxError) {
+            assertEq(actual, expected, m);
+        }
+    }
+}
+
+contract RewardToken is ERC20("RewardToken", "REWARD", 18) {
+    function mint(uint256 amount) public virtual {
+        _mint(msg.sender, amount);
     }
 }
