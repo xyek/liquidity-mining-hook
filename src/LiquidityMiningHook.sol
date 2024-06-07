@@ -28,7 +28,7 @@ function hookPermissions() pure returns (Hooks.Permissions memory) {
         afterInitialize: false,
         beforeAddLiquidity: true,
         afterAddLiquidity: false,
-        beforeRemoveLiquidity: false,
+        beforeRemoveLiquidity: true,
         afterRemoveLiquidity: false,
         beforeSwap: true,
         afterSwap: true,

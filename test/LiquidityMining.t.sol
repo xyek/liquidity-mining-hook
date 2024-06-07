@@ -320,6 +320,30 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEqWithError({actual: getRewards(p1), expected: 5 ether + 2.5 ether, maxError: Q32, m: "check41"});
         assertEqWithError({actual: getRewards(p2), expected: 15 ether + 7.5 ether, maxError: Q32, m: "check42"});
         assertEqWithError({actual: getRewards(p3), expected: 10 ether, maxError: Q32, m: "check43"});
+
+        withdrawRewards(p1, address(1111));
+        assertEqWithError({
+            actual: rewardToken.balanceOf(address(1111)),
+            expected: 7.5 ether,
+            maxError: Q32,
+            m: "check51"
+        });
+
+        withdrawRewards(p2, address(2222));
+        assertEqWithError({
+            actual: rewardToken.balanceOf(address(2222)),
+            expected: 22.5 ether,
+            maxError: Q32,
+            m: "check52"
+        });
+
+        withdrawRewards(p3, address(3333));
+        assertEqWithError({
+            actual: rewardToken.balanceOf(address(3333)),
+            expected: 10 ether,
+            maxError: Q32,
+            m: "check53"
+        });
     }
 
     function currentTick() internal view returns (int24 tickCurrent) {
@@ -363,6 +387,20 @@ contract LiquidityMiningTest is Test, Deployers {
         );
 
         return PositionRef(address(modifyLiquidityRouter), tickLower, tickUpper, salt);
+    }
+
+    function withdrawRewards(PositionRef memory p, address beneficiary) internal {
+        // add liquidity
+        modifyLiquidityRouter.modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: p.tickLower,
+                tickUpper: p.tickUpper,
+                liquidityDelta: 0,
+                salt: p.salt
+            }),
+            abi.encode(rewardToken, rate, beneficiary)
+        );
     }
 
     function getLiquidityPoints(PositionRef memory p) internal returns (uint256 liquidityPoints) {
