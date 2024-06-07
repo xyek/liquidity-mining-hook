@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-library Reward {
+library Stream {
     function key(int24 tickLower, int24 tickUpper, address rewardToken, uint256 rate)
         internal
         pure
