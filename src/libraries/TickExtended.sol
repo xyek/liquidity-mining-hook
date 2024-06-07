@@ -5,18 +5,19 @@ library TickExtended {
     using TickExtended for *;
 
     struct Info {
-        uint256 secondsOutside;
-        uint256 secondsPerLiquidityOutsideX128;
+        // the timestamp when the tick was last outside the tick range
+        uint48 secondsOutside;
+        // the cumulative seconds per liquidity outside the tick range
+        uint176 secondsPerLiquidityOutsideX128;
     }
 
-    function crossTick(
+    function cross(
         mapping(int24 tick => TickExtended.Info) storage self,
         int24 tick,
-        uint256 secondsPerLiquidityGlobalX128
+        uint176 secondsPerLiquidityGlobalX128
     ) internal {
-        unchecked {
-            TickExtended.Info storage info = self[tick];
-            info.secondsPerLiquidityOutsideX128 = secondsPerLiquidityGlobalX128 - info.secondsPerLiquidityOutsideX128;
-        }
+        Info storage info = self[tick];
+        info.secondsOutside = uint48(block.timestamp - info.secondsOutside);
+        info.secondsPerLiquidityOutsideX128 = secondsPerLiquidityGlobalX128 - info.secondsPerLiquidityOutsideX128;
     }
 }

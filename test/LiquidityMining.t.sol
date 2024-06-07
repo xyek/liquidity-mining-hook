@@ -29,7 +29,7 @@ contract LiquidityMiningTest is Test, Deployers {
 
     LiquidityMiningHook hook;
     PoolId poolId;
-    RewardToken rewardToken;
+    StreamToken streamToken;
 
     function setUp() public {
         // creates the pool manager, utility routers, and test tokens
@@ -48,7 +48,7 @@ contract LiquidityMiningTest is Test, Deployers {
         poolId = key.toId();
         manager.initialize(key, SQRT_PRICE_1_1, ZERO_BYTES);
 
-        rewardToken = new RewardToken();
+        streamToken = new StreamToken();
     }
 
     function testSecondsInside() public {
@@ -295,51 +295,51 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEq(getLiquidityPoints(p3), (25 seconds << 32) - 1 + (101 seconds << 32) - 1, "check63");
     }
 
-    function testTwoLpRewards_1() external {
+    function testTwoLpStreams_1() external {
         PositionRef memory p1 = addLiquidity(1e18, -1200, 1200, keccak256("1"));
         PositionRef memory p2 = addLiquidity(3e18, -1200, 1200, keccak256("2"));
 
-        streamReward(-1200, 1200, rate = 1 ether, 100 seconds);
+        createStream(-1200, 1200, rate = 1 ether, 100 seconds);
 
-        assertEq(getRewards(p1), 0, "check11");
-        assertEq(getRewards(p2), 0, "check12");
+        assertEq(getStreams(p1), 0, "check11");
+        assertEq(getStreams(p2), 0, "check12");
 
         advanceTime(20 seconds);
 
-        assertEqWithError({actual: getRewards(p1), expected: 5 ether, maxError: Q32, m: "check21"});
-        assertEqWithError({actual: getRewards(p2), expected: 15 ether, maxError: Q32, m: "check22"});
+        assertEqWithError({actual: getStreams(p1), expected: 5 ether, maxError: Q32, m: "check21"});
+        assertEqWithError({actual: getStreams(p2), expected: 15 ether, maxError: Q32, m: "check22"});
 
         PositionRef memory p3 = addLiquidity(4e18, -1200, 1200, keccak256("3"));
 
-        assertEqWithError({actual: getRewards(p1), expected: 5 ether, maxError: Q32, m: "check31"});
-        assertEqWithError({actual: getRewards(p2), expected: 15 ether, maxError: Q32, m: "check32"});
-        assertEq(getRewards(p3), 0, "check33");
+        assertEqWithError({actual: getStreams(p1), expected: 5 ether, maxError: Q32, m: "check31"});
+        assertEqWithError({actual: getStreams(p2), expected: 15 ether, maxError: Q32, m: "check32"});
+        assertEq(getStreams(p3), 0, "check33");
 
         advanceTime(20 seconds);
 
-        assertEqWithError({actual: getRewards(p1), expected: 5 ether + 2.5 ether, maxError: Q32, m: "check41"});
-        assertEqWithError({actual: getRewards(p2), expected: 15 ether + 7.5 ether, maxError: Q32, m: "check42"});
-        assertEqWithError({actual: getRewards(p3), expected: 10 ether, maxError: Q32, m: "check43"});
+        assertEqWithError({actual: getStreams(p1), expected: 5 ether + 2.5 ether, maxError: Q32, m: "check41"});
+        assertEqWithError({actual: getStreams(p2), expected: 15 ether + 7.5 ether, maxError: Q32, m: "check42"});
+        assertEqWithError({actual: getStreams(p3), expected: 10 ether, maxError: Q32, m: "check43"});
 
-        withdrawRewards(p1, address(1111));
+        withdrawStreams(p1, address(1111));
         assertEqWithError({
-            actual: rewardToken.balanceOf(address(1111)),
+            actual: streamToken.balanceOf(address(1111)),
             expected: 7.5 ether,
             maxError: Q32,
             m: "check51"
         });
 
-        withdrawRewards(p2, address(2222));
+        withdrawStreams(p2, address(2222));
         assertEqWithError({
-            actual: rewardToken.balanceOf(address(2222)),
+            actual: streamToken.balanceOf(address(2222)),
             expected: 22.5 ether,
             maxError: Q32,
             m: "check52"
         });
 
-        withdrawRewards(p3, address(3333));
+        withdrawStreams(p3, address(3333));
         assertEqWithError({
-            actual: rewardToken.balanceOf(address(3333)),
+            actual: streamToken.balanceOf(address(3333)),
             expected: 10 ether,
             maxError: Q32,
             m: "check53"
@@ -389,7 +389,7 @@ contract LiquidityMiningTest is Test, Deployers {
         return PositionRef(address(modifyLiquidityRouter), tickLower, tickUpper, salt);
     }
 
-    function withdrawRewards(PositionRef memory p, address beneficiary) internal {
+    function withdrawStreams(PositionRef memory p, address beneficiary) internal {
         // add liquidity
         modifyLiquidityRouter.modifyLiquidity(
             key,
@@ -399,28 +399,27 @@ contract LiquidityMiningTest is Test, Deployers {
                 liquidityDelta: 0,
                 salt: p.salt
             }),
-            abi.encode(rewardToken, rate, beneficiary)
+            abi.encode(streamToken, rate, beneficiary)
         );
     }
 
     function getLiquidityPoints(PositionRef memory p) internal returns (uint256 liquidityPoints) {
         vm.prank(address(0));
-        (liquidityPoints,,) = hook.getUpdatedPosition(key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, "");
+        (liquidityPoints,,) =
+            hook.getUpdatedPosition(key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, ERC20(address(0)), 0);
     }
 
-    function streamReward(int24 tickLower, int24 tickUpper, uint256 streamRate, uint48 duration) internal {
-        rewardToken.mint(streamRate * duration);
-        rewardToken.approve(address(hook), streamRate * duration);
-        hook.streamReward(key.toId(), tickLower, tickUpper, rewardToken, streamRate, duration);
+    function createStream(int24 tickLower, int24 tickUpper, uint256 streamRate, uint48 duration) internal {
+        streamToken.mint(streamRate * duration);
+        streamToken.approve(address(hook), streamRate * duration);
+        hook.createStream(key.toId(), tickLower, tickUpper, streamToken, streamRate, duration);
     }
 
     uint256 rate;
 
-    function getRewards(PositionRef memory p) internal returns (uint256 rewards) {
+    function getStreams(PositionRef memory p) internal returns (uint256 streams) {
         vm.prank(address(0));
-        (,, rewards) = hook.getUpdatedPosition(
-            key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, abi.encode(rewardToken, rate, address(0))
-        );
+        (,, streams) = hook.getUpdatedPosition(key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, streamToken, rate);
     }
 
     function perLiquidity(uint256 secs) internal pure returns (uint160) {
@@ -435,7 +434,7 @@ contract LiquidityMiningTest is Test, Deployers {
     }
 }
 
-contract RewardToken is ERC20("RewardToken", "REWARD", 18) {
+contract StreamToken is ERC20("StreamToken", "REWARD", 18) {
     function mint(uint256 amount) public virtual {
         _mint(msg.sender, amount);
     }

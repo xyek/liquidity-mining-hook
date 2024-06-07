@@ -19,6 +19,8 @@ import {SafeTransferLib, ERC20} from "solmate/utils/SafeTransferLib.sol";
 
 import {Simulate} from "./libraries/SimulateSwap.sol";
 import {Stream} from "./libraries/Stream.sol";
+import {PositionExtended} from "./libraries/PositionExtended.sol";
+import {TickExtended} from "./libraries/TickExtended.sol";
 
 import {console} from "forge-std/console.sol";
 
@@ -45,38 +47,17 @@ contract LiquidityMiningHook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
     using SafeTransferLib for ERC20;
-
-    struct TickExtendedInfo {
-        // the timestamp when the tick was last outside the tick range
-        uint48 secondsOutside;
-        // the cumulative seconds per liquidity outside the tick range
-        uint176 secondsPerLiquidityOutsideX128;
-    }
-
-    struct PositionExtendedInfo {
-        // liquidity points awarded for this position, updated on each position modification
-        uint80 relativeSecondsCumulativeX32;
-        // snapshot of getSecondsPerLiquidityInsideX128 for which liquidity points are already awarded
-        uint176 secondsPerLiquidityInsideLastX128;
-        mapping(ERC20 streamToken => mapping(uint256 rate => uint256)) claimed;
-    }
-
-    // TODO
-    // bool killable;
-    // uint256 claimedSeconds;
-    struct StreamInfo {
-        uint48 start;
-        uint48 expiry;
-        address provider;
-    }
+    using PositionExtended for *;
+    using TickExtended for *;
+    using Stream for *;
 
     // TODO add tokens fund state
     struct PoolExtendedState {
         uint48 lastBlockTimestamp;
         uint176 secondsPerLiquidityGlobalX128;
-        mapping(int24 tick => TickExtendedInfo) ticks;
-        mapping(bytes32 positionKey => PositionExtendedInfo) positions;
-        mapping(bytes32 streamKey => StreamInfo) streams;
+        mapping(int24 tick => TickExtended.Info) ticks;
+        mapping(bytes32 positionKey => PositionExtended.Info) positions;
+        mapping(bytes32 streamKey => Stream.Info) streams;
     }
 
     mapping(PoolId => PoolExtendedState) public pools;
@@ -192,26 +173,8 @@ contract LiquidityMiningHook is BaseHook {
         external
     {
         require(rate > 0, "LiquidityMiningHook: rate must be non-zero");
-        bytes32 streamKey = Stream.key(tickLower, tickUpper, address(streamToken), rate);
-        StreamInfo memory info = pools[id].streams[streamKey];
-        if (info.provider != address(0)) {
-            require(info.provider == msg.sender, "LiquidityMiningHook: stream already provided");
-        } else {
-            info.provider = msg.sender;
-        }
-        if (info.start == 0) {
-            // fresh start
-            info.start = uint48(block.timestamp);
-            info.expiry = uint48(block.timestamp + duration);
-        } else if (info.expiry < block.timestamp) {
-            // old stream expired
-            info.start = uint48(block.timestamp);
-            info.expiry = uint48(block.timestamp + duration);
-        } else {
-            // stream extend
-            info.expiry = uint48(info.expiry + duration);
-        }
-        pools[id].streams[streamKey] = info;
+
+        pools[id].streams.create(msg.sender, tickLower, tickUpper, streamToken, rate, duration);
 
         streamToken.safeTransferFrom(msg.sender, address(this), rate * duration);
     }
@@ -223,45 +186,11 @@ contract LiquidityMiningHook is BaseHook {
     /// @param streamToken The token to stream
     /// @param rate The per second stream rate of the token
     function terminateStream(PoolId id, int24 tickLower, int24 tickUpper, ERC20 streamToken, uint256 rate) external {
-        bytes32 streamKey = Stream.key(tickLower, tickUpper, address(streamToken), rate);
-        StreamInfo memory info = pools[id].streams[streamKey];
-        require(info.provider == msg.sender, "LiquidityMiningHook: only provider can terminate stream");
+        uint256 unstreamedTokens = pools[id].streams.terminate(msg.sender, tickLower, tickUpper, streamToken, rate);
 
-        uint256 expiry = pools[id].streams[streamKey].expiry;
-
-        require(expiry > block.timestamp, "LiquidityMiningHook: stream already expired");
-
-        pools[id].streams[streamKey].expiry = uint48(block.timestamp);
-
-        uint256 unspentDuration = expiry - block.timestamp;
-        streamToken.safeTransfer(msg.sender, rate * unspentDuration);
-    }
-
-    /// @notice Calculates the stream share for a position
-    /// @param position The position storage pointer
-    /// @param start The start timestamp of the stream
-    /// @param expiry The expiry timestamp of the stream
-    /// @param rate The rate of the stream
-    /// @param totalSecondsInside The total seconds price was inside the position's tick range
-    /// @return stream The stream share in token amount for the position
-    function _calculateStreamShare(
-        PositionExtendedInfo storage position,
-        uint48 start,
-        uint48 expiry,
-        uint256 rate,
-        uint256 totalSecondsInside
-    ) internal view returns (uint256 stream) {
-        if (totalSecondsInside == 0) {
-            return 0;
+        if (unstreamedTokens > 0) {
+            streamToken.safeTransfer(msg.sender, unstreamedTokens);
         }
-        uint256 duration;
-        if (expiry < block.timestamp) {
-            duration = expiry - start;
-        } else {
-            duration = block.timestamp - start;
-        }
-        uint256 totalTokens = duration * rate;
-        return FullMath.mulDiv(position.relativeSecondsCumulativeX32, totalTokens, totalSecondsInside << 32);
     }
 
     /// @notice Updates the global and then position state based on the block.timestamp
@@ -280,7 +209,7 @@ contract LiquidityMiningHook is BaseHook {
         int24 tickUpper,
         bytes32 salt,
         bytes memory hookData
-    ) internal returns (PositionExtendedInfo storage position, uint256 streamTokenAmount) {
+    ) internal returns (PositionExtended.Info storage position, uint256 streamTokenAmount) {
         PoolExtendedState storage pool = _updateGlobalState(id);
 
         {
@@ -303,9 +232,8 @@ contract LiquidityMiningHook is BaseHook {
         if (hookData.length != 0) {
             (ERC20 streamToken, uint256 rate, address beneficiary) = abi.decode(hookData, (ERC20, uint256, address));
             uint256 secondsInside = getSecondsInside(id, tickLower, tickUpper);
-            StreamInfo storage streamInfo = pool.streams[Stream.key(tickLower, tickUpper, address(streamToken), rate)];
             uint256 totalPositionStream =
-                _calculateStreamShare(position, streamInfo.start, streamInfo.expiry, rate, secondsInside);
+                pool.streams.calculate(position, tickLower, tickUpper, streamToken, rate, secondsInside);
             streamTokenAmount = totalPositionStream - position.claimed[streamToken][rate];
             if (streamTokenAmount > 0 && beneficiary != address(0)) {
                 position.claimed[streamToken][rate] = totalPositionStream;
@@ -367,10 +295,7 @@ contract LiquidityMiningHook is BaseHook {
     function _swapStepHandler(PoolId id, Pool.StepComputations memory step, Pool.SwapState memory state) internal {
         if (state.sqrtPriceX96 == step.sqrtPriceNextX96 && step.initialized) {
             PoolExtendedState storage pool = pools[id];
-            TickExtendedInfo storage tick = pool.ticks[step.tickNext];
-            tick.secondsOutside = uint48(block.timestamp - tick.secondsOutside);
-            tick.secondsPerLiquidityOutsideX128 =
-                pool.secondsPerLiquidityGlobalX128 - tick.secondsPerLiquidityOutsideX128;
+            pool.ticks.cross(step.tickNext, pool.secondsPerLiquidityGlobalX128);
         }
     }
 
@@ -384,7 +309,7 @@ contract LiquidityMiningHook is BaseHook {
     {
         (uint128 liquidityGrossBefore,) = poolManager.getTickLiquidity(id, tickIdx);
         if (liquidityGrossBefore == 0) {
-            TickExtendedInfo storage tick = pools[id].ticks[tickIdx];
+            TickExtended.Info storage tick = pools[id].ticks[tickIdx];
             if (tickIdx <= tickCurrent) {
                 tick.secondsPerLiquidityOutsideX128 = secondsPerLiquidityCumulativeX128;
                 tick.secondsOutside = uint48(block.timestamp);
@@ -486,7 +411,7 @@ contract LiquidityMiningHook is BaseHook {
             uint256 unclaimedStreams
         )
     {
-        PositionExtendedInfo storage position;
+        PositionExtended.Info storage position;
         (position, unclaimedStreams) =
             _updatePositionState(id, owner, tickLower, tickUpper, salt, abi.encode(streamToken, rate, address(0)));
         return (position.relativeSecondsCumulativeX32, position.secondsPerLiquidityInsideLastX128, unclaimedStreams);
@@ -502,7 +427,7 @@ contract LiquidityMiningHook is BaseHook {
     function _getPositionPtr(PoolId id, address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
         internal
         view
-        returns (PositionExtendedInfo storage position)
+        returns (PositionExtended.Info storage position)
     {
         // TODO use Position.key https://github.com/Uniswap/v4-core/pull/733
         bytes32 positionKey;
