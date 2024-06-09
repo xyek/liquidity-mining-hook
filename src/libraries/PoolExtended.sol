@@ -15,7 +15,6 @@ library PoolExtended {
     using StateLibrary for IPoolManager;
     using TickExtended for *;
 
-    // TODO add tokens fund state
     struct Info {
         uint48 lastBlockTimestamp;
         uint176 secondsPerLiquidityGlobalX128;

@@ -21,6 +21,7 @@ import {Stream} from "./libraries/Stream.sol";
 import {PositionExtended} from "./libraries/PositionExtended.sol";
 import {PoolExtended} from "./libraries/PoolExtended.sol";
 import {TickExtended} from "./libraries/TickExtended.sol";
+import {TransientMapping} from "./libraries/TransientMapping.sol";
 
 import {console} from "forge-std/console.sol";
 
@@ -51,8 +52,12 @@ contract LiquidityMiningHook is BaseHook {
     using PoolExtended for *;
     using TickExtended for *;
     using Stream for *;
+    using TransientMapping for *;
 
     mapping(PoolId => PoolExtended.Info) public pools;
+
+    // TODO use this once Solidity adds transient keyword support
+    mapping(PoolId => BalanceDelta simulatedSwap) public /* transient */ swapCache;
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
@@ -79,7 +84,6 @@ contract LiquidityMiningHook is BaseHook {
     function createStream(PoolId id, int24 tickLower, int24 tickUpper, ERC20 streamToken, uint256 rate, uint48 duration)
         external
     {
-        require(rate > 0, "LiquidityMiningHook: rate must be non-zero");
         pools[id].streams.create(msg.sender, tickLower, tickUpper, streamToken, rate, duration);
     }
 
@@ -106,13 +110,13 @@ contract LiquidityMiningHook is BaseHook {
         poolManagerOnly
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        PoolId id = key.toId();
-        pools.update(id, poolManager);
+        PoolId poolId = key.toId();
+        pools.update(poolId, poolManager);
 
         // simulate the swap and update the tick states
         BalanceDelta simulatedSwapDelta = Simulate.swap(
             poolManager,
-            id,
+            poolId,
             Pool.SwapParams({
                 tickSpacing: key.tickSpacing,
                 zeroForOne: swapParams.zeroForOne,
@@ -122,11 +126,10 @@ contract LiquidityMiningHook is BaseHook {
             }),
             _swapStepHook
         );
-        assembly {
-            // store the simulated swap delta to check against it in afterSwap
-            tstore(id, simulatedSwapDelta)
-        }
-        // we returning the simulated swap delta to check it in after swap
+
+        // we want to check that the simulated swap must equal actual swap
+        swapCache.tstore(poolId, simulatedSwapDelta);
+
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
@@ -140,13 +143,12 @@ contract LiquidityMiningHook is BaseHook {
         BalanceDelta swapDelta,
         bytes calldata
     ) external view override poolManagerOnly returns (bytes4, int128) {
-        PoolId id = key.toId();
-        BalanceDelta simulatedSwapDelta;
-        assembly {
-            // store the simulated swap delta to check against it in afterSwap
-            simulatedSwapDelta := tload(id)
-        }
+        PoolId poolId = key.toId();
+
+        // store the simulated swap delta to check against it in afterSwap
+        BalanceDelta simulatedSwapDelta = swapCache.tload(poolId);
         assert(swapDelta == simulatedSwapDelta);
+
         return (BaseHook.afterSwap.selector, 0);
     }
 
@@ -163,7 +165,7 @@ contract LiquidityMiningHook is BaseHook {
         PoolId id = key.toId();
         (PoolExtended.Info storage pool, PositionExtended.Info storage position) =
             _updateState(id, owner, params.tickLower, params.tickUpper, params.salt);
-        if (hookData.length > 0) {
+        if (hookData.length == 0x80) {
             _processHookData(hookData, pool, id, position, params);
         }
         return BaseHook.beforeAddLiquidity.selector;
@@ -182,7 +184,7 @@ contract LiquidityMiningHook is BaseHook {
         PoolId id = key.toId();
         (PoolExtended.Info storage pool, PositionExtended.Info storage position) =
             _updateState(id, owner, params.tickLower, params.tickUpper, params.salt);
-        if (hookData.length > 0) {
+        if (hookData.length == 0x80) {
             _processHookData(hookData, pool, id, position, params);
         }
         return BaseHook.beforeRemoveLiquidity.selector;
@@ -210,6 +212,7 @@ contract LiquidityMiningHook is BaseHook {
         int24 tickLower,
         int24 tickUpper,
         bytes32 salt,
+        address streamCreator,
         ERC20 streamToken,
         uint256 rate
     )
@@ -224,8 +227,8 @@ contract LiquidityMiningHook is BaseHook {
         (PoolExtended.Info storage pool, PositionExtended.Info storage position) =
             _updateState(id, owner, tickLower, tickUpper, salt);
         uint176 secondsInside = pool.getSecondsInside(id, tickLower, tickUpper, poolManager);
-        uint256 totalPositionStream =
-            pool.streams.calculate(position, tickLower, tickUpper, streamToken, rate, secondsInside);
+        bytes32 streamKey = Stream.key(streamCreator, tickLower, tickUpper, address(streamToken), rate);
+        uint256 totalPositionStream = pool.streams.calculate(position, streamKey, rate, secondsInside);
         return (
             position.relativeSecondsCumulativeX32,
             position.secondsPerLiquidityInsideLastX128,
@@ -279,11 +282,8 @@ contract LiquidityMiningHook is BaseHook {
         PositionExtended.Info storage position,
         IPoolManager.ModifyLiquidityParams calldata params
     ) internal {
-        (ERC20 streamToken, uint256 rate, address beneficiary) = abi.decode(hookData, (ERC20, uint256, address));
         uint176 secondsInside = pool.getSecondsInside(id, params.tickLower, params.tickUpper, poolManager);
-        pool.streams.withdraw(
-            position, params.tickLower, params.tickUpper, streamToken, rate, beneficiary, secondsInside
-        );
+        pool.streams.withdraw(position, hookData, params.tickLower, params.tickUpper, secondsInside);
     }
 
     /// @notice Handler for the swap steps, called on every tick cross

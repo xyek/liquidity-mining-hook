@@ -399,14 +399,15 @@ contract LiquidityMiningTest is Test, Deployers {
                 liquidityDelta: 0,
                 salt: p.salt
             }),
-            abi.encode(streamToken, rate, beneficiary)
+            abi.encode(address(this), streamToken, rate, beneficiary)
         );
     }
 
     function getLiquidityPoints(PositionRef memory p) internal returns (uint256 liquidityPoints) {
         vm.prank(address(0));
-        (liquidityPoints,,) =
-            hook.getUpdatedPosition(key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, ERC20(address(0)), 0);
+        (liquidityPoints,,) = hook.getUpdatedPosition(
+            key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, msg.sender, ERC20(address(0)), 0
+        );
     }
 
     function createStream(int24 tickLower, int24 tickUpper, uint256 streamRate, uint48 duration) internal {
@@ -419,7 +420,9 @@ contract LiquidityMiningTest is Test, Deployers {
 
     function getStreams(PositionRef memory p) internal returns (uint256 streams) {
         vm.prank(address(0));
-        (,, streams) = hook.getUpdatedPosition(key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, streamToken, rate);
+        (,, streams) = hook.getUpdatedPosition(
+            key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, address(this), streamToken, rate
+        );
     }
 
     function perLiquidity(uint256 secs) internal pure returns (uint160) {

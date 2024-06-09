@@ -17,11 +17,10 @@ library Stream {
     struct Info {
         uint48 start;
         uint48 expiry;
-        address creator;
     }
 
     // TODO take the creator in the key as well
-    function key(int24 tickLower, int24 tickUpper, address rewardToken, uint256 rate)
+    function key(address creator, int24 tickLower, int24 tickUpper, address rewardToken, uint256 rate)
         internal
         pure
         returns (bytes32 hashed)
@@ -29,10 +28,12 @@ library Stream {
         assembly {
             tickLower := and(tickLower, 0xffffff)
             tickUpper := and(tickUpper, 0xffffff)
-            let packed := or(or(shl(184, tickLower), shl(160, tickUpper)), rewardToken)
-            mstore(0, packed)
-            mstore(32, rate)
-            hashed := keccak256(0, 64)
+            let packed := or(or(shl(184, tickLower), shl(160, tickUpper)), creator)
+            let fmp := mload(0x40)
+            mstore(fmp, packed)
+            mstore(add(fmp, 0x20), rewardToken)
+            mstore(add(fmp, 0x40), rate)
+            hashed := keccak256(fmp, 0x60)
         }
     }
 
@@ -45,13 +46,9 @@ library Stream {
         uint256 rate,
         uint48 duration
     ) internal {
-        bytes32 streamKey = Stream.key(tickLower, tickUpper, address(streamToken), rate);
-        Stream.Info memory info = self[streamKey];
-        if (info.creator != address(0)) {
-            require(info.creator == creator, "LiquidityMiningHook: stream already provided");
-        } else {
-            info.creator = creator;
-        }
+        require(rate > 0, "LiquidityMiningHook: rate must be non-zero");
+        bytes32 streamKey = Stream.key(creator, tickLower, tickUpper, address(streamToken), rate);
+        Stream.Info storage info = self[streamKey];
         if (info.start == 0) {
             // fresh start
             info.start = uint48(block.timestamp);
@@ -64,31 +61,28 @@ library Stream {
             // stream extend
             info.expiry = uint48(info.expiry + duration);
         }
-        self[streamKey] = info;
-
         streamToken.safeTransferFrom(msg.sender, address(this), rate * duration);
     }
 
     function calculate(
         mapping(bytes32 streamKey => Stream.Info) storage self,
         PositionExtended.Info storage position,
-        int24 tickLower,
-        int24 tickUpper,
-        ERC20 streamToken,
+        bytes32 streamKey,
         uint256 rate,
         uint256 totalSecondsInside
     ) internal view returns (uint256 tokens) {
-        bytes32 streamKey = Stream.key(tickLower, tickUpper, address(streamToken), rate);
-        uint256 start = self[streamKey].start;
-        uint256 expiry = self[streamKey].expiry;
-        if (totalSecondsInside == 0) {
-            return 0;
-        }
         uint256 duration;
-        if (expiry < block.timestamp) {
-            duration = expiry - start;
-        } else {
-            duration = block.timestamp - start;
+        {
+            uint256 start = self[streamKey].start;
+            uint256 expiry = self[streamKey].expiry;
+            if (totalSecondsInside == 0) {
+                return 0;
+            }
+            if (expiry < block.timestamp) {
+                duration = expiry - start;
+            } else {
+                duration = block.timestamp - start;
+            }
         }
         uint256 totalTokens = duration * rate;
         return FullMath.mulDiv(position.relativeSecondsCumulativeX32, totalTokens, totalSecondsInside << 32);
@@ -102,9 +96,8 @@ library Stream {
         ERC20 streamToken,
         uint256 rate
     ) internal {
-        bytes32 streamKey = Stream.key(tickLower, tickUpper, address(streamToken), rate);
+        bytes32 streamKey = Stream.key(caller, tickLower, tickUpper, address(streamToken), rate);
         Stream.Info storage info = self[streamKey];
-        require(info.creator == caller, "LiquidityMiningHook: not creator");
 
         uint256 expiry = info.expiry;
         require(expiry > block.timestamp, "LiquidityMiningHook: stream already expired");
@@ -118,18 +111,26 @@ library Stream {
     }
 
     function withdraw(
-        mapping(bytes32 streamKey => Stream.Info) storage self,
+        mapping(bytes32 streamKey => Stream.Info) storage stream,
         PositionExtended.Info storage position,
+        bytes calldata hookData,
         int24 tickLower,
         int24 tickUpper,
-        ERC20 streamToken,
-        uint256 rate,
-        address beneficiary,
         uint256 secondsInside
     ) internal {
-        uint256 totalPositionStream = self.calculate(position, tickLower, tickUpper, streamToken, rate, secondsInside);
+        ERC20 streamToken;
+        uint256 rate;
+        bytes32 streamKey;
+        {
+            address creator;
+            (creator, streamToken, rate,) = abi.decode(hookData, (address, ERC20, uint256, address));
+            streamKey = Stream.key(creator, tickLower, tickUpper, address(streamToken), rate);
+        }
+        uint256 totalPositionStream = stream.calculate(position, streamKey, rate, secondsInside);
         uint256 streamTokenAmount = totalPositionStream - position.claimed[streamToken][rate];
-        if (streamTokenAmount > 0 && beneficiary != address(0)) {
+
+        if (streamTokenAmount > 0) {
+            (,,, address beneficiary) = abi.decode(hookData, (address, ERC20, uint256, address));
             position.claimed[streamToken][rate] = totalPositionStream;
             streamToken.safeTransfer(beneficiary, streamTokenAmount);
         }
