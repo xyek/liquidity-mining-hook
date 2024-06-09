@@ -2,11 +2,15 @@
 pragma solidity ^0.8.24;
 
 import {FullMath} from "v4-core/src/libraries/FullMath.sol";
-import {ERC20} from "solmate/utils/SafeTransferLib.sol";
+import {SafeTransferLib, ERC20} from "solmate/utils/SafeTransferLib.sol";
+import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 
 import {PositionExtended} from "./PositionExtended.sol";
 
 library Stream {
+    using Stream for *;
+    using SafeTransferLib for ERC20;
+
     // TODO
     // bool killable;
     // uint256 claimedSeconds;
@@ -61,6 +65,8 @@ library Stream {
             info.expiry = uint48(info.expiry + duration);
         }
         self[streamKey] = info;
+
+        streamToken.safeTransferFrom(msg.sender, address(this), rate * duration);
     }
 
     function calculate(
@@ -95,7 +101,7 @@ library Stream {
         int24 tickUpper,
         ERC20 streamToken,
         uint256 rate
-    ) internal returns (uint256 unstreamedTokens) {
+    ) internal {
         bytes32 streamKey = Stream.key(tickLower, tickUpper, address(streamToken), rate);
         Stream.Info storage info = self[streamKey];
         require(info.creator == caller, "LiquidityMiningHook: not creator");
@@ -105,7 +111,28 @@ library Stream {
         info.expiry = uint48(block.timestamp);
 
         uint256 unspentDuration = expiry - block.timestamp;
-        unstreamedTokens = unspentDuration * rate;
+        uint256 unstreamedTokens = unspentDuration * rate;
+        if (unstreamedTokens > 0) {
+            streamToken.safeTransfer(msg.sender, unstreamedTokens);
+        }
+    }
+
+    function withdraw(
+        mapping(bytes32 streamKey => Stream.Info) storage self,
+        PositionExtended.Info storage position,
+        int24 tickLower,
+        int24 tickUpper,
+        ERC20 streamToken,
+        uint256 rate,
+        address beneficiary,
+        uint256 secondsInside
+    ) internal {
+        uint256 totalPositionStream = self.calculate(position, tickLower, tickUpper, streamToken, rate, secondsInside);
+        uint256 streamTokenAmount = totalPositionStream - position.claimed[streamToken][rate];
+        if (streamTokenAmount > 0 && beneficiary != address(0)) {
+            position.claimed[streamToken][rate] = totalPositionStream;
+            streamToken.safeTransfer(beneficiary, streamTokenAmount);
+        }
     }
 
     // TODO add kill

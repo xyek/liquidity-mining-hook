@@ -33,7 +33,7 @@ library Simulate {
         IPoolManager poolManager,
         PoolId poolId,
         Pool.SwapParams memory params,
-        function(PoolId, Pool.StepComputations memory,Pool.SwapState memory) swapStepHandler
+        function(PoolId, Pool.StepComputations memory,Pool.SwapState memory) swapStepHook
     ) internal returns (BalanceDelta result) {
         uint24 swapFee;
         Pool.SwapState memory state;
@@ -143,7 +143,7 @@ library Simulate {
                 }
             }
 
-            swapStepHandler(poolId, step, state);
+            swapStepHook(poolId, step, state);
 
             // shift tick if we reached the next price
             if (state.sqrtPriceX96 == step.sqrtPriceNextX96) {
