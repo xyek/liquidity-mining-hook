@@ -18,8 +18,9 @@ import {HookMiner} from "./utils/HookMiner.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {FixedPoint128} from "v4-core/src/libraries/FixedPoint128.sol";
 import {ERC20} from "solmate/utils/SafeTransferLib.sol";
+import {GasSnapshot} from "forge-gas-snapshot/GasSnapshot.sol";
 
-contract LiquidityMiningTest is Test, Deployers {
+contract LiquidityMiningTest is Test, Deployers, GasSnapshot {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
     using HookHelpers for Hooks.Permissions;
@@ -81,7 +82,7 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEq(hook.getSecondsInside(poolId, -1500, 3000), 100 seconds, "check25");
         assertEq(hook.getSecondsInside(poolId, -3000, 3000), 100 seconds, "check26");
 
-        swap(key, false, 0.09 ether, ZERO_BYTES);
+        swap2(key, false, 0.09 ether, ZERO_BYTES);
         assertEq(currentTick(), 1886); // <===== current tick is updated by swap
 
         assertEq(hook.getSecondsInside(poolId, -1200, 1200), 100 seconds, "check31");
@@ -100,7 +101,7 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEq(hook.getSecondsInside(poolId, -1500, 3000), 250 seconds, "check45");
         assertEq(hook.getSecondsInside(poolId, -3000, 3000), 250 seconds, "check46");
 
-        swap(key, true, 0.17 ether, ZERO_BYTES);
+        swap2(key, true, 0.17 ether, ZERO_BYTES);
         assertEq(currentTick(), -1780); // <===== current tick is updated by swap
 
         assertEq(hook.getSecondsInside(poolId, -1200, 1200), 100 seconds, "check51");
@@ -150,7 +151,7 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEq(hook.getSecondsPerLiquidityInsideX128(poolId, -1500, 3000), perLiquidity(100 seconds), "check25");
         assertEq(hook.getSecondsPerLiquidityInsideX128(poolId, -3000, 3000), perLiquidity(100 seconds), "check26");
 
-        swap(key, false, 0.09 ether, ZERO_BYTES);
+        swap2(key, false, 0.09 ether, ZERO_BYTES);
         assertEq(currentTick(), 1886); // <===== current tick is updated by swap
 
         assertEq(hook.getSecondsPerLiquidityInsideX128(poolId, -1200, 1200), perLiquidity(100 seconds), "check31");
@@ -169,7 +170,7 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEq(hook.getSecondsPerLiquidityInsideX128(poolId, -1500, 3000), perLiquidity(250 seconds), "check45");
         assertEq(hook.getSecondsPerLiquidityInsideX128(poolId, -3000, 3000), perLiquidity(250 seconds), "check46");
 
-        swap(key, true, 0.17 ether, ZERO_BYTES);
+        swap2(key, true, 0.17 ether, ZERO_BYTES);
         assertEq(currentTick(), -1780); // <===== current tick is updated by swap
 
         assertEq(hook.getSecondsPerLiquidityInsideX128(poolId, -1200, 1200), perLiquidity(100 seconds), "check51");
@@ -265,7 +266,7 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEq(getLiquidityPoints(p2), 0, "check22");
         assertEq(getLiquidityPoints(p3), 0, "check23");
 
-        swap(key, true, 0.05 ether, ZERO_BYTES);
+        swap2(key, true, 0.05 ether, ZERO_BYTES);
         assertEq(currentTick(), -706); // <===== current tick is updated by swap
 
         assertEq(getLiquidityPoints(p1), (100 seconds << 32) - 1, "check31");
@@ -280,7 +281,7 @@ contract LiquidityMiningTest is Test, Deployers {
         assertEq(getLiquidityPoints(p2), (50 seconds << 32) - 1, "check42");
         assertEq(getLiquidityPoints(p3), (25 seconds << 32) - 1, "check43");
 
-        swap(key, true, 0.1 ether, ZERO_BYTES);
+        swap2(key, true, 0.1 ether, ZERO_BYTES);
         assertEq(currentTick(), -1241); // <===== current tick is updated by swap
 
         assertEq(getLiquidityPoints(p1), (100 seconds << 32) - 1 + (25 seconds << 32) - 1, "check51");
@@ -385,6 +386,7 @@ contract LiquidityMiningTest is Test, Deployers {
             }),
             ZERO_BYTES
         );
+        snapLastCall("modifyLiquidity");
 
         return PositionRef(address(modifyLiquidityRouter), tickLower, tickUpper, salt);
     }
@@ -401,6 +403,7 @@ contract LiquidityMiningTest is Test, Deployers {
             }),
             abi.encode(address(this), streamToken, rate, beneficiary)
         );
+        snapLastCall("modifyLiquidity-withdrawStreams");
     }
 
     function getLiquidityPoints(PositionRef memory p) internal returns (uint256 liquidityPoints) {
@@ -408,12 +411,14 @@ contract LiquidityMiningTest is Test, Deployers {
         (liquidityPoints,,) = hook.getUpdatedPosition(
             key.toId(), p.owner, p.tickLower, p.tickUpper, p.salt, msg.sender, ERC20(address(0)), 0
         );
+        snapLastCall("getUpdatedPosition");
     }
 
     function createStream(int24 tickLower, int24 tickUpper, uint256 streamRate, uint48 duration) internal {
         streamToken.mint(streamRate * duration);
         streamToken.approve(address(hook), streamRate * duration);
         hook.createStream(key.toId(), tickLower, tickUpper, streamToken, streamRate, duration);
+        snapLastCall("createStream");
     }
 
     uint256 rate;
@@ -434,6 +439,14 @@ contract LiquidityMiningTest is Test, Deployers {
         if (diff > maxError) {
             assertEq(actual, expected, m);
         }
+    }
+
+    function swap2(PoolKey memory _key, bool zeroForOne, int256 amountSpecified, bytes memory hookData)
+        internal
+        returns (BalanceDelta value)
+    {
+        value = swap(_key, zeroForOne, amountSpecified, hookData);
+        snapLastCall("swap");
     }
 }
 

@@ -23,8 +23,6 @@ import {PoolExtended} from "./libraries/PoolExtended.sol";
 import {TickExtended} from "./libraries/TickExtended.sol";
 import {TransientMapping} from "./libraries/TransientMapping.sol";
 
-import {console} from "forge-std/console.sol";
-
 function hookPermissions() pure returns (Hooks.Permissions memory) {
     return Hooks.Permissions({
         beforeInitialize: false,

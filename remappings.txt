@@ -2,7 +2,7 @@
 @openzeppelin/=lib/v4-periphery/lib/openzeppelin-contracts/
 ds-test/=lib/forge-std/lib/ds-test/src/
 erc4626-tests/=lib/v4-periphery/lib/openzeppelin-contracts/lib/erc4626-tests/
-forge-gas-snapshot/=lib/v4-periphery/lib/forge-gas-snapshot/src/
+forge-gas-snapshot/=lib/forge-gas-snapshot/src/
 forge-std/=lib/forge-std/src/
 hardhat/=lib/v4-core/node_modules/hardhat/
 openzeppelin-contracts/=lib/v4-periphery/lib/openzeppelin-contracts/
