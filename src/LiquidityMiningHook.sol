@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {BaseHook} from "v4-periphery/BaseHook.sol";
+import {ERC20} from "solmate/tokens/ERC20.sol";
 
-import {FullMath} from "v4-core/src/libraries/FullMath.sol";
-import {FixedPoint128} from "v4-core/src/libraries/FixedPoint128.sol";
-import {LiquidityMath} from "v4-core/src/libraries/LiquidityMath.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {Pool} from "v4-core/src/libraries/Pool.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
-import {BalanceDelta, BalanceDeltaLibrary} from "v4-core/src/types/BalanceDelta.sol";
+import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
-import {ERC20} from "solmate/tokens/ERC20.sol";
+
+import {BaseHook} from "v4-periphery/BaseHook.sol";
 
 import {Simulate} from "./libraries/SimulateSwap.sol";
 import {Stream} from "./libraries/Stream.sol";
@@ -47,7 +45,6 @@ contract LiquidityMiningHook is BaseHook {
     using StateLibrary for IPoolManager;
     using PoolExtended for *;
     using PositionExtended for *;
-    using PoolExtended for *;
     using TickExtended for *;
     using Stream for *;
     using TransientMapping for *;
