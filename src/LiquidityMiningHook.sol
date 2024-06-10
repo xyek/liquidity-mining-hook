@@ -49,6 +49,8 @@ contract LiquidityMiningHook is BaseHook {
     using Stream for *;
     using TransientMapping for *;
 
+    error EthCallOnly();
+
     mapping(PoolId => PoolExtended.Info) public pools;
 
     // TODO use this once Solidity adds transient keyword support
@@ -57,7 +59,9 @@ contract LiquidityMiningHook is BaseHook {
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
     modifier ethCallOnly() {
-        require(msg.sender == address(0), "LiquidityMiningHook: view-only method");
+        if (msg.sender != address(0)) {
+            revert EthCallOnly();
+        }
         _;
     }
 
@@ -75,7 +79,7 @@ contract LiquidityMiningHook is BaseHook {
     function createStream(PoolId id, int24 tickLower, int24 tickUpper, ERC20 streamToken, uint256 rate, uint48 duration)
         external
     {
-        pools[id].streams.create(msg.sender, tickLower, tickUpper, streamToken, rate, duration);
+        pools[id].streams.create(msg.sender, tickLower, tickUpper, streamToken, rate, duration, id);
     }
 
     /// @notice Allows the provider to terminate the stream and claim the unstreamed tokens
@@ -85,7 +89,7 @@ contract LiquidityMiningHook is BaseHook {
     /// @param streamToken The token to stream
     /// @param rate The per second stream rate of the token
     function terminateStream(PoolId id, int24 tickLower, int24 tickUpper, ERC20 streamToken, uint256 rate) external {
-        pools[id].streams.terminate(msg.sender, tickLower, tickUpper, streamToken, rate);
+        pools[id].streams.terminate(msg.sender, tickLower, tickUpper, streamToken, rate, id);
     }
 
     /**
@@ -224,7 +228,7 @@ contract LiquidityMiningHook is BaseHook {
         (PoolExtended.Info storage pool, PositionExtended.Info storage position) =
             _updateState(id, owner, tickLower, tickUpper, salt);
         uint176 secondsInside = pool.getSecondsInside(id, tickLower, tickUpper, poolManager);
-        bytes32 streamKey = Stream.key(streamCreator, tickLower, tickUpper, address(streamToken), rate);
+        bytes32 streamKey = Stream.key(streamCreator, tickLower, tickUpper, streamToken, rate);
         uint256 totalPositionStream = pool.streams.calculate(position, streamKey, rate, secondsInside);
         return (
             position.relativeSecondsCumulativeX32,

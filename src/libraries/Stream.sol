@@ -11,6 +11,25 @@ library Stream {
     using Stream for *;
     using SafeTransferLib for ERC20;
 
+    error RateMustBeNonZero();
+
+    error StreamAlreadyExpired(uint256 expiry, uint256 blockTimestamp);
+
+    event StreamCreated(
+        PoolId indexed poolId,
+        bytes32 indexed streamKey,
+        address indexed creator,
+        int24 tickLower,
+        int24 tickUpper,
+        ERC20 rewardToken,
+        uint256 rate,
+        uint48 duration
+    );
+
+    event StreamTerminated(PoolId indexed poolId, bytes32 indexed streamKey, uint256 unstreamedTokens);
+
+    event StreamWithdraw(uint256 indexed positionId, bytes32 indexed streamKey, uint256 streamTokenAmount);
+
     // TODO
     // bool killable;
     // uint256 claimedSeconds;
@@ -20,7 +39,7 @@ library Stream {
     }
 
     // TODO take the creator in the key as well
-    function key(address creator, int24 tickLower, int24 tickUpper, address rewardToken, uint256 rate)
+    function key(address creator, int24 tickLower, int24 tickUpper, ERC20 rewardToken, uint256 rate)
         internal
         pure
         returns (bytes32 hashed)
@@ -44,10 +63,11 @@ library Stream {
         int24 tickUpper,
         ERC20 streamToken,
         uint256 rate,
-        uint48 duration
+        uint48 duration,
+        PoolId poolId
     ) internal {
-        require(rate > 0, "LiquidityMiningHook: rate must be non-zero");
-        bytes32 streamKey = Stream.key(creator, tickLower, tickUpper, address(streamToken), rate);
+        if (rate == 0) revert RateMustBeNonZero();
+        bytes32 streamKey = Stream.key(creator, tickLower, tickUpper, streamToken, rate);
         Stream.Info storage info = self[streamKey];
         if (info.start == 0) {
             // fresh start
@@ -62,6 +82,7 @@ library Stream {
             info.expiry = uint48(info.expiry + duration);
         }
         streamToken.safeTransferFrom(msg.sender, address(this), rate * duration);
+        emit StreamCreated(poolId, streamKey, creator, tickLower, tickUpper, streamToken, rate, duration);
     }
 
     function calculate(
@@ -94,13 +115,16 @@ library Stream {
         int24 tickLower,
         int24 tickUpper,
         ERC20 streamToken,
-        uint256 rate
+        uint256 rate,
+        PoolId poolId
     ) internal {
-        bytes32 streamKey = Stream.key(caller, tickLower, tickUpper, address(streamToken), rate);
+        bytes32 streamKey = Stream.key(caller, tickLower, tickUpper, streamToken, rate);
         Stream.Info storage info = self[streamKey];
 
         uint256 expiry = info.expiry;
-        require(expiry > block.timestamp, "LiquidityMiningHook: stream already expired");
+        if (expiry <= block.timestamp) {
+            revert StreamAlreadyExpired(expiry, block.timestamp);
+        }
         info.expiry = uint48(block.timestamp);
 
         uint256 unspentDuration = expiry - block.timestamp;
@@ -108,6 +132,7 @@ library Stream {
         if (unstreamedTokens > 0) {
             streamToken.safeTransfer(msg.sender, unstreamedTokens);
         }
+        emit StreamTerminated(poolId, streamKey, unstreamedTokens);
     }
 
     function withdraw(
@@ -124,7 +149,7 @@ library Stream {
         {
             address creator;
             (creator, streamToken, rate,) = abi.decode(hookData, (address, ERC20, uint256, address));
-            streamKey = Stream.key(creator, tickLower, tickUpper, address(streamToken), rate);
+            streamKey = Stream.key(creator, tickLower, tickUpper, streamToken, rate);
         }
         uint256 totalPositionStream = stream.calculate(position, streamKey, rate, secondsInside);
         uint256 streamTokenAmount = totalPositionStream - position.claimed[streamToken][rate];
@@ -134,6 +159,11 @@ library Stream {
             position.claimed[streamToken][rate] = totalPositionStream;
             streamToken.safeTransfer(beneficiary, streamTokenAmount);
         }
+        uint256 positionId;
+        assembly {
+            positionId := position.slot
+        }
+        emit StreamWithdraw(positionId, streamKey, streamTokenAmount);
     }
 
     // TODO add kill
