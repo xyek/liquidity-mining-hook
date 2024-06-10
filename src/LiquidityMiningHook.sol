@@ -64,10 +64,6 @@ contract LiquidityMiningHook is BaseHook {
         _;
     }
 
-    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
-        return hookPermissions();
-    }
-
     /**
      *  External Methods
      */
@@ -98,6 +94,12 @@ contract LiquidityMiningHook is BaseHook {
     /**
      *  Hook implementations
      */
+
+    /// @notice Provides the permissions for the hook
+    /// @return permissions The permissions for the hook
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
+        return hookPermissions();
+    }
 
     /// @notice Hook called by PoolManager before a swap is executed
     /// @param key The pool key
