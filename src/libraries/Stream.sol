@@ -13,7 +13,7 @@ library Stream {
 
     error RateMustBeNonZero();
 
-    error StreamAlreadyExpired(uint256 expiry, uint256 blockTimestamp);
+    error TokenAmountTooHigh();
 
     event StreamCreated(
         PoolId indexed poolId,
@@ -26,16 +26,14 @@ library Stream {
         uint48 duration
     );
 
-    event StreamTerminated(PoolId indexed poolId, bytes32 indexed streamKey, uint256 unstreamedTokens);
+    event StreamKilled(PoolId indexed poolId, bytes32 indexed streamKey, uint256 unstreamedTokens);
 
     event StreamWithdraw(uint256 indexed positionId, bytes32 indexed streamKey, uint256 streamTokenAmount);
 
-    // TODO
-    // bool killable;
-    // uint256 claimedSeconds;
     struct Info {
         uint48 start;
         uint48 expiry;
+        uint160 withdrawnTokens;
     }
 
     // TODO take the creator in the key as well
@@ -81,7 +79,9 @@ library Stream {
             // stream extend
             info.expiry = uint48(info.expiry + duration);
         }
-        streamToken.safeTransferFrom(msg.sender, address(this), rate * duration);
+        uint256 tokenAmount = rate * duration;
+        if (tokenAmount > type(uint160).max) revert TokenAmountTooHigh();
+        streamToken.safeTransferFrom(msg.sender, address(this), tokenAmount);
         emit StreamCreated(poolId, streamKey, creator, tickLower, tickUpper, streamToken, rate, duration);
     }
 
@@ -91,7 +91,7 @@ library Stream {
         bytes32 streamKey,
         uint256 rate,
         uint256 totalSecondsInside
-    ) internal view returns (uint256 tokens) {
+    ) internal view returns (uint160) {
         uint256 duration;
         {
             uint256 start = self[streamKey].start;
@@ -106,10 +106,10 @@ library Stream {
             }
         }
         uint256 totalTokens = duration * rate;
-        return FullMath.mulDiv(position.relativeSecondsCumulativeX32, totalTokens, totalSecondsInside << 32);
+        return uint160(FullMath.mulDiv(position.relativeSecondsCumulativeX32, totalTokens, totalSecondsInside << 32));
     }
 
-    function terminate(
+    function kill(
         mapping(bytes32 streamKey => Stream.Info) storage self,
         address caller,
         int24 tickLower,
@@ -119,24 +119,18 @@ library Stream {
         PoolId poolId
     ) internal {
         bytes32 streamKey = Stream.key(caller, tickLower, tickUpper, streamToken, rate);
-        Stream.Info storage info = self[streamKey];
+        Stream.Info memory info = self[streamKey];
 
-        uint256 expiry = info.expiry;
-        if (expiry <= block.timestamp) {
-            revert StreamAlreadyExpired(expiry, block.timestamp);
-        }
-        info.expiry = uint48(block.timestamp);
-
-        uint256 unspentDuration = expiry - block.timestamp;
-        uint256 unstreamedTokens = unspentDuration * rate;
+        uint256 unstreamedTokens = (info.expiry - info.start) * rate - info.withdrawnTokens;
         if (unstreamedTokens > 0) {
             streamToken.safeTransfer(msg.sender, unstreamedTokens);
         }
-        emit StreamTerminated(poolId, streamKey, unstreamedTokens);
+        delete self[streamKey];
+        emit StreamKilled(poolId, streamKey, unstreamedTokens);
     }
 
     function withdraw(
-        mapping(bytes32 streamKey => Stream.Info) storage stream,
+        mapping(bytes32 streamKey => Stream.Info) storage streams,
         PositionExtended.Info storage position,
         bytes calldata hookData,
         int24 tickLower,
@@ -151,12 +145,13 @@ library Stream {
             (creator, streamToken, rate,) = abi.decode(hookData, (address, ERC20, uint256, address));
             streamKey = Stream.key(creator, tickLower, tickUpper, streamToken, rate);
         }
-        uint256 totalPositionStream = stream.calculate(position, streamKey, rate, secondsInside);
+        uint160 totalPositionStream = streams.calculate(position, streamKey, rate, secondsInside);
         uint256 streamTokenAmount = totalPositionStream - position.claimed[streamToken][rate];
 
         if (streamTokenAmount > 0) {
             (,,, address beneficiary) = abi.decode(hookData, (address, ERC20, uint256, address));
-            position.claimed[streamToken][rate] = totalPositionStream;
+            position.claimed[streamToken][rate] += totalPositionStream;
+            streams[streamKey].withdrawnTokens += totalPositionStream;
             streamToken.safeTransfer(beneficiary, streamTokenAmount);
         }
         uint256 positionId;

@@ -82,14 +82,14 @@ contract LiquidityMiningHook is BaseHook {
         pools[id].streams.create(msg.sender, tickLower, tickUpper, streamToken, rate, duration, id);
     }
 
-    /// @notice Allows the provider to terminate the stream and claim the unstreamed tokens
+    /// @notice Allows the stream creator to kill the stream and withdraw the unstreamed tokens so far
     /// @param id The pool id
     /// @param tickLower The lower tick of the range
     /// @param tickUpper The upper tick of the range
     /// @param streamToken The token to stream
     /// @param rate The per second stream rate of the token
-    function terminateStream(PoolId id, int24 tickLower, int24 tickUpper, ERC20 streamToken, uint256 rate) external {
-        pools[id].streams.terminate(msg.sender, tickLower, tickUpper, streamToken, rate, id);
+    function killStream(PoolId id, int24 tickLower, int24 tickUpper, ERC20 streamToken, uint256 rate) external {
+        pools[id].streams.kill(msg.sender, tickLower, tickUpper, streamToken, rate, id);
     }
 
     /**
