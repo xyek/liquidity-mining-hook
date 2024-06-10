@@ -8,11 +8,13 @@ This is a hobby project built during [Hookathon C1](https://uniswap.atrium.acade
 
 In traditional liquidity mining, user has to perform additional action after addition of liquidity called "stake". Not only this requires multiple transactions and more gas fees but the user experience also degrades.
 
+In Uniswap V3 to V4 upgrade, some tick variables were removed which makes it challenging for external liquidity mining staking contracts to function.
+
 ## Solution
 
-This project is a hook for uniswap v4 pool.
+Maintain additional tick variables in the hook state that enable to calculate rewards for liquidity positions.
 
-When user is interacting with a v4 pool that uses this hook under the hood, user can simply add or remove the liquidity using standard v4 interface. And to claim the rewards for their previous liquidity positions users just require to pass a [`hookData`](https://github.com/xyek/liquidity-hook/blob/main/src/LiquidityMiningHook.sol#L169-L172) when they are removing liquidity (or they can also add liquidity of 0 value which would also trigger the rewards withdrawal).
+Seamless user experience when adding or removing the liquidity using standard v4 interface. And to claim the rewards for their previous liquidity positions users just require to pass a [`hookData`](https://github.com/xyek/liquidity-hook/blob/main/src/LiquidityMiningHook.sol#L169-L172) when they are removing liquidity (or they can also add liquidity of 0 value which would also trigger the rewards withdrawal).
 
 ## How does this work?
 
